@@ -28,9 +28,18 @@ struct ConversationStateSnapshot {
 
 struct ConversationEngineContext {
   std::string session_id;
-  EventTimeline* timeline = nullptr;
+  EventTimeline* timeline = nullptr;  // Legacy borrowed ingress; valid until stop.
+  std::uint64_t generation = 1;
+  // Prefer this weak-lifetime sink for asynchronous provider observations.
+  EventTimeline::Sink emit;
 };
 
+// start/stop run on the session lifecycle lane, without a session lock.
+// push_audio, handle_event and state may run concurrently while Running; these
+// methods must be thread-safe and bounded. stop is called only after admitted
+// calls drain, and must quiesce provider callbacks, including after failed start.
+// Arbitrary provider/application callbacks should call request_stop(), never a
+// blocking lifecycle wait. Do not destroy the session from its callbacks.
 class ConversationEngine {
  public:
   virtual ~ConversationEngine() = default;

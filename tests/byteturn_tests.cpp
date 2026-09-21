@@ -11,6 +11,7 @@
 #include "byteturn/pipeline_conversation_engine.h"
 #include "byteturn/full_duplex_conversation.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -473,6 +474,16 @@ void test_observability() {
           "event payload redacted by default");
   require(logs.str().find("\"session_id\":\"s\"") != std::string::npos,
           "structured correlation fields");
+  Event lifecycle(EventType::SessionStarted, "s");
+  lifecycle.generation = 7;
+  events.publish(lifecycle);
+  require(logs.str().find("\"event\":\"session_started\"") != std::string::npos &&
+              logs.str().find("\"generation\":7") != std::string::npos &&
+              logs.str().find("\"received_at_ns\":") != std::string::npos,
+          "generic lifecycle events retain non-payload timeline metadata");
+  require(std::string(event_type_name(EventType::SessionStopped)) == "session_stopped" &&
+              std::string(event_type_name(EventType::SessionFailed)) == "session_failed",
+          "all generic lifecycle events have stable logger names");
 }
 
 void test_curl_policy() {
@@ -693,13 +704,88 @@ void test_conversation_session_allows_overlap() {
   const auto state = session.state();
   require(state.agent_speaking && state.user_speaking,
           "user and agent activity may overlap in one session");
-  require(session.timeline().size() == 2,
-          "continuous semantic events are retained by the timeline");
+  require(session.timeline().size() == 3,
+          "session-start and overlapping semantic events are retained");
+  require(session.timeline().snapshot().front().type == EventType::SessionStarted,
+          "generic session lifecycle is independent of provider lifecycle");
   require(session.capabilities().simultaneous_listen_speak,
           "engine advertises simultaneous listen/speak capability");
 }
 
+// Exercise the real pipeline adapter, not only a mock state projection.
+// Model/tool event unification and playback policy remain separate milestones.
+void test_pipeline_engine_timeline_integration() {
+  ImmediateAsr asr;
+  BlockingStreamLlm llm;
+  RecordingTts tts;
+  ToolRegistry tools;
+  Agent agent(llm, tools);
+  SessionExecutor executor(1);
+  AsyncSession agent_session("pipeline-integration", agent, executor);
+  EventBus events;
+  MetricsRegistry metrics;
+  RuntimeObserver observer(events, metrics);
+  std::promise<void> completed_promise;
+  auto completed = completed_promise.get_future();
+  std::atomic<bool> completion_seen{false};
+  std::atomic<unsigned> audio_frames{0};
+  std::vector<Event> delivered;
+  const auto subscription = events.subscribe([&](const Event& event) {
+    delivered.push_back(event);  // One timeline dispatcher; read after flush.
+    if (event.type == EventType::ConversationTurnCompleted &&
+        !completion_seen.exchange(true))
+      completed_promise.set_value();
+  });
+  auto engine = std::make_unique<PipelineConversationEngine>(
+      asr, agent_session, tts, [](const std::string&, bool) {},
+      [&](const AudioFrame&) { ++audio_frames; });
+  ConversationSession session("pipeline-integration", std::move(engine), &events);
+  session.start();
+  require(session.push_audio({{1, 2, 3}, 16000, 1, true}),
+          "session forwards accepted audio to the real pipeline");
+  llm.release();
+  require(completed.wait_for(std::chrono::seconds(5)) == std::future_status::ready,
+          "real engine delivers a completed speech response through timeline");
+  session.stop();
+  require(session.timeline().flush(), "pipeline observer notifications drained");
+  const auto history = session.timeline().snapshot();
+  require(history.size() == delivered.size() && !history.empty(),
+          "real pipeline journal and observer counts match");
+  for (std::size_t i = 0; i < history.size(); ++i) {
+    require(history[i].sequence == i + 1 &&
+                delivered[i].sequence == history[i].sequence &&
+                delivered[i].timestamp == history[i].timestamp &&
+                delivered[i].received_at == history[i].received_at &&
+                delivered[i].trace_id == history[i].trace_id &&
+                delivered[i].generation == history[i].generation &&
+                delivered[i].type == history[i].type,
+            "real adapter uses canonical ordered metadata without bus rewrites");
+  }
+  require(history.front().type == EventType::SessionStarted &&
+              history.back().type == EventType::SessionStopped,
+          "real pipeline is enclosed by generic lifecycle events");
+  require(audio_frames > 0 &&
+              metrics.histogram("byteturn_asr_final_latency_ms").count == 1 &&
+              metrics.histogram("byteturn_s2s_first_audio_latency_ms").count == 1 &&
+              metrics.histogram("byteturn_tts_total_duration_ms").count == 1,
+          "existing speech output and wired latency metrics survive async timeline");
+  require(session.timeline().stats().dropped_notifications == 0,
+          "integration fixture fits the notification budget");
+  events.unsubscribe(subscription);
+
+  auto mismatched = std::make_unique<PipelineConversationEngine>(
+      asr, agent_session, tts, [](const std::string&, bool) {},
+      [](const AudioFrame&) {});
+  ConversationSession wrong_session("foreign", std::move(mismatched));
+  bool rejected = false;
+  try { wrong_session.start(); }
+  catch (const std::invalid_argument&) { rejected = true; }
+  require(rejected && wrong_session.lifecycle() == SessionLifecycle::Failed,
+          "mismatched pipeline identity fails and cleans up at startup");
+}
+
 int main() {
+  test_pipeline_engine_timeline_integration();
   test_conversation_session_allows_overlap();
   test_agent_and_events();
   test_session_executor();

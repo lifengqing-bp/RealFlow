@@ -220,6 +220,10 @@ void JsonEventLogger::write(const Event& event) {
           << json_escape(event.turn_id) << "\",\"name\":\""
           << json_escape(event.name) << "\",\"trace_id\":\""
           << json_escape(event.trace_id) << '"';
+  output_ << ",\"generation\":" << event.generation
+          << ",\"received_at_ns\":"
+          << std::chrono::duration_cast<std::chrono::nanoseconds>(
+                 event.received_at.time_since_epoch()).count();
   if (options_.include_payload)
     output_ << ",\"data\":\"" << json_escape(event.data) << '"';
   output_ << "}\n";
@@ -254,6 +258,9 @@ const char* event_type_name(EventType type) {
     case EventType::TurnCancelled: return "turn_cancelled";
     case EventType::RealtimeSessionClosed: return "realtime_session_closed";
     case EventType::Error: return "error";
+    case EventType::SessionStarted: return "session_started";
+    case EventType::SessionStopped: return "session_stopped";
+    case EventType::SessionFailed: return "session_failed";
   }
   return "unknown";
 }

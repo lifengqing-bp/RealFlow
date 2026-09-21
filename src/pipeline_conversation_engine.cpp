@@ -18,7 +18,10 @@ PipelineConversationEngine::PipelineConversationEngine(
 
 void PipelineConversationEngine::start(ConversationEngineContext context) {
   if (conversation_) return;
-  if (!context.timeline) throw std::invalid_argument("event timeline is required");
+  if (context.session_id != session_.id())
+    throw std::invalid_argument("pipeline and conversation session IDs must match");
+  if (!context.emit && context.timeline) context.emit = context.timeline->sink();
+  if (!context.emit) throw std::invalid_argument("event sink is required");
   context_ = std::move(context);
   bridge_subscription_ =
       bridge_bus_.subscribe([this](const Event& event) { on_event(event); });
@@ -91,7 +94,7 @@ void PipelineConversationEngine::on_event(const Event& event) {
         break;
     }
   }
-  context_.timeline->append(event);
+  (void)context_.emit(event);
 }
 
 }  // namespace byteturn

@@ -35,3 +35,8 @@ enable_testing()
 add_executable(byteturn_tests tests/byteturn_tests.cpp)
 target_link_libraries(byteturn_tests PRIVATE byteturn)
 add_test(NAME byteturn_tests COMMAND byteturn_tests)
+
+add_executable(runtime_foundation_tests tests/runtime_foundation_tests.cpp)
+target_link_libraries(runtime_foundation_tests PRIVATE byteturn)
+add_test(NAME runtime_foundation_tests COMMAND runtime_foundation_tests)
+set_tests_properties(byteturn_tests runtime_foundation_tests PROPERTIES TIMEOUT 120)
