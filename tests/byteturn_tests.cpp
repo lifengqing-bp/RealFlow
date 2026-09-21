@@ -7,6 +7,8 @@
 #include "byteturn/sentence_segmenter.h"
 #include "byteturn/incremental_tts.h"
 #include "byteturn/conversation.h"
+#include "byteturn/conversation_session.h"
+#include "byteturn/pipeline_conversation_engine.h"
 #include "byteturn/full_duplex_conversation.h"
 
 #include <atomic>
@@ -655,7 +657,50 @@ void test_audio_queue_overload() {
   require(!conversation.push_audio(frame), "audio overload rejects newest frame");
 }
 
+
+class OverlapTestEngine final : public ConversationEngine {
+ public:
+  void start(ConversationEngineContext context) override { context_ = context; }
+  bool push_audio(AudioFrame) override { return true; }
+  void handle_event(const Event& event) override {
+    if (event.type == EventType::InputSpeechStarted) state_.user_speaking = true;
+    if (event.type == EventType::InputSpeechEnded) state_.user_speaking = false;
+    if (event.type == EventType::SpeechStarted) state_.agent_speaking = true;
+    if (event.type == EventType::SpeechCompleted) state_.agent_speaking = false;
+  }
+  void stop() override {}
+  ConversationCapabilities capabilities() const override {
+    ConversationCapabilities caps;
+    caps.native_full_duplex = true;
+    caps.simultaneous_listen_speak = true;
+    return caps;
+  }
+  ConversationStateSnapshot state() const override { return state_; }
+
+ private:
+  ConversationEngineContext context_;
+  ConversationStateSnapshot state_;
+};
+
+void test_conversation_session_allows_overlap() {
+  auto engine = std::make_unique<OverlapTestEngine>();
+  ConversationSession session("continuous", std::move(engine));
+  session.start();
+
+  session.handle_event({EventType::SpeechStarted, "continuous"});
+  session.handle_event({EventType::InputSpeechStarted, "continuous"});
+
+  const auto state = session.state();
+  require(state.agent_speaking && state.user_speaking,
+          "user and agent activity may overlap in one session");
+  require(session.timeline().size() == 2,
+          "continuous semantic events are retained by the timeline");
+  require(session.capabilities().simultaneous_listen_speak,
+          "engine advertises simultaneous listen/speak capability");
+}
+
 int main() {
+  test_conversation_session_allows_overlap();
   test_agent_and_events();
   test_session_executor();
   test_executor_overload_and_deadline();
