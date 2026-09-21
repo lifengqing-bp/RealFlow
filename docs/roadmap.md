@@ -2,320 +2,233 @@
 
 **RealFlow — Realtime Human-Agent Interaction Runtime**
 
-> Make continuous human interaction independent of asynchronous agent reasoning
-> and execution.
+Make continuous human interaction independent of asynchronous agent reasoning and
+execution. This is a dependency-driven roadmap, not a calendar promise. A milestone
+is complete only when its acceptance gates are demonstrated.
 
-This is a dependency-driven roadmap, not a calendar promise. Milestones are
-complete only when their acceptance gates are demonstrated. The implementation
-snapshot is based on `e312d8c` (PR #1); the detailed contracts and known gaps are
-in [architecture.md](architecture.md).
+Baseline: `ee95f2f`, merged PR #3 (M2.1). Contracts are in
+[architecture.md](architecture.md); M2.1 implementation details and limitations are
+in [runtime-foundation.md](runtime-foundation.md). Planned APIs are not existing APIs.
 
-## 1. Scope and status
+## 1. Status and priorities
 
-RealFlow's focus is realtime interaction: session lifetime, continuous input,
-output arbitration, interruption correctness, asynchronous delegation, and
-measurable behavior under load. Integrate general agent frameworks rather than
-rebuilding their planning engines.
-
-| Foundation | Status at the snapshot |
+| Foundation | Status |
 |---|---|
-| RealFlow project identity | Partial: CMake project renamed; `byteturn` paths, namespace, targets, and metrics remain. |
-| Streaming ASR–agent–TTS pipeline | Present: bounded workers, streaming text, segmentation, incremental TTS, deadlines, and cancellation. |
-| HTTP/SSE and observability | Present; unified event coverage and production validation remain open. |
-| Native realtime path | Present as `FullDuplexConversation`; not yet a `ConversationEngine` implementation. |
-| Continuous session abstraction | Initial `ConversationSession`, `EventTimeline`, engine interface, and pipeline wrapper are merged. |
-| Overlap validation | Test-engine representation test exists; real-engine conformance is still required. |
-| Custom agent/delegation/tool runtime | Design only; today's `Agent` and `ToolRegistry` are narrower implementations. |
-| Durable replay, advanced resilience, orchestration | Planned. |
+| RealFlow identity | Partial: CMake project renamed; `byteturn` paths, namespace, targets and metrics remain. |
+| Streaming cascade and HTTP/SSE | Present; full event coverage and production validation remain open. |
+| Session/timeline foundation | M2.1 landed: canonical metadata, bounded observation queues and lifecycle safeguards. |
+| Real pipeline integration | Fixture exists; complete model/tool events and interruption policy remain open. |
+| Runtime registry/admission/supervisor | Design in this revision; next implementation slice. |
+| Native realtime path | `FullDuplexConversation` exists outside the unified engine boundary. |
+| Custom agents, safe tools, context | Designed; concrete current Agent/ToolRegistry are narrower. |
+| Durable replay, recovery, orchestration | Planned. |
 
-“Present” means source exists. It is not a claim that production readiness or all
-build, sanitizer, transport, and load-test gates have already passed.
+“Present” is not a production-readiness claim. M2.1's local validation is not a
+substitute for CI or high-concurrency/live-provider testing. Runtime ownership now
+precedes additional adapters: safe individual sessions are insufficient without
+bounded admission and reliable retirement across the whole process.
 
-## 2. Public milestones and dependencies
+## 2. Public milestones
 
 ```text
-M0 Identity and baseline
-           |
-M1 Stream — preserve and verify the existing streaming path
-           |
-M2 Converse — one safe continuous session for pipeline and native duplex
-           |
-M3 Delegate — custom asynchronous agents, tools, and context
-           |
-M4 Operate — production resilience, recording, replay, and evaluation
-           |
-Later: demand-led framework adapters and bounded orchestration
-
-Safety, bounded resources, test fixtures, and observability run through every
-milestone. They are not postponed until M4.
+M0 Identity / reproducible baseline
+  -> M1 Stream / preserve streaming behavior
+  -> M2 Converse / runtime ownership + unified continuous sessions
+  -> M3 Delegate / custom agents, tools and context
+  -> M4 Operate / measured resilience, recovery and replay
 ```
 
-| Milestone | User-visible outcome | Architectural gate |
-|---|---|---|
-| M0 — Identity | A consistently named project with a reproducible baseline. | Naming/migration policy and build coverage. |
-| M1 — Stream | A reliable, measurable streaming reference path. | Existing behaviors remain covered before further refactoring. |
-| M2 — Converse | Pipeline and native duplex share one session contract. | Canonical events, safe lifecycle, explicit interruption, real-engine conformance. |
-| M3 — Delegate | Conversation continues while a custom agent performs work. | Structured task events, scoped cancellation, safe tools, versioned context. |
-| M4 — Operate | Failures can be diagnosed, reproduced, and handled within declared limits. | Load/failure gates, privacy-aware recording, policy replay, explicit recovery. |
+Safety, bounded queues, diagnostics and regression fixtures run through every
+milestone. Do not postpone basic admission, privacy or failure handling until M4.
 
-M1 stabilization and M2 work may overlap. The merged abstraction skeleton is
-progress toward M2, not evidence that M1 or M2 is complete.
+## 3. M0 — Identity and baseline
 
-## 3. M0 — Identity and reproducible baseline
+Finish ByteTurn → RealFlow naming in a separate compatibility change: namespace,
+headers, targets, executable names, documentation and metric migration policy.
+Preserve license and attribution notices. Publish reproducible Make and CMake builds
+and executable examples that use the actual API.
 
-**Goal:** complete ByteTurn → RealFlow without mixing mechanical changes with
-behavioral refactoring.
-
-Finish the project/package, namespace, include-path, target, binary, example,
-and documentation rename in a dedicated change. Define whether old headers and
-build targets remain compatibility aliases and document the removal policy.
-Metric dashboards need a deliberate migration; do not silently rename exported
-series. Preserve `LICENSE-ByteTurn` and other attribution notices as applicable.
-
-**Acceptance gate:** both supported build paths run the same relevant tests;
-examples match public names; compatibility behavior and breaking changes are
-explicit. Capture a baseline before and after the rename. No undocumented
-`realflow` namespace or binary may appear in runnable examples before it exists.
+**Gate:** both build paths and existing tests pass; mechanical renames do not change
+behavior; breaking names and compatibility paths are documented.
 
 ## 4. M1 — Stream
 
-**Goal:** retain a useful streaming ASR → Agent/LLM → sentence segmentation →
-TTS implementation throughout the migration.
+Preserve bounded ASR input, FIFO agent history execution, streaming text, sentence
+segmentation, incremental TTS, deadlines and cancellation. Keep HTTP TLS, retry,
+response-size and SSE parsing behavior covered. Never retry already-delivered speech.
+Test cancellation, overload, failed synthesis, fragmented SSE and local history
+rollback without claiming rollback of external tool side effects.
 
-Preserve bounded ASR/TTS queues, serialized mutable agent history, streaming
-text/tool fragments, cooperative cancellation, submission-time deadlines,
-provider error handling, and current stage metrics. Verify that CMake and the
-Makefile include all new sources/tests. Add a reproducible fake-provider example
-that requires neither credentials nor a hosted model.
-
-Retain the HTTP transport's TLS, timeout, cancellation, response-limit, and
-streaming retry behavior. Test fragmented SSE, cancellation during streaming,
-queue overflow, failed synthesis, and history rollback. History rollback must
-not be documented as undoing completed external tool actions.
-
-**Acceptance gate:** the existing regression suite and both build paths pass;
-streaming reaches audio before full text completion in a controlled fixture;
-queue/time limits are enforced; cancellation produces no stale output; stage
-metrics retain documented endpoints. Record load and hardware assumptions rather
-than declaring production quality from a CLI demonstration.
+**Gate:** a controlled fixture delivers audio before full text completion; bounded
+queues and deadlines work; no stale output after cancellation; stage metrics retain
+explicit endpoints. Report hardware/load conditions rather than claiming production
+quality from a demo.
 
 ## 5. M2 — Converse
 
-**Goal:** a single continuous interaction lifetime across pipeline and native
-speech-to-speech engines, without a mandatory turn-based session loop.
+One continuous session contract for pipeline and native speech engines, owned by a
+bounded runtime rather than independent ad hoc objects in each transport.
 
-### M2.1 — Harden the session and timeline (current priority)
+### M2.1 — Session/timeline foundation (landed, PR #3)
 
-Implement one per-session admission/normalization path. Assign sequence and
-receive timestamp once, before storage and delivery. Separate commands from
-observations; reject foreign-session or stale-generation input; bound retention
-and observer queues. Record gaps, overload, and observer failures explicitly.
+Canonical sequence/receive metadata is assigned before storage and notifications.
+Retention, event sizes and asynchronous notification queues are bounded. Lifecycle
+states, admitted-operation leases, partial-start cleanup and callback-safe stop
+requests are implemented. Weak event sinks fence destroyed sessions.
 
-Replace the current flag-only lifecycle with defined startup, running, stopping,
-and failure transitions. Protect admitted operations against teardown, clean up
-partial startup, and remove external callbacks from locked lifecycle sections.
-Define callback re-entry and borrowed-provider lifetimes. Add fake-clock and
-scripted-engine fixtures here, not only during the later replay milestone.
+**Evidence:** the PR records regression/integration and foundation tests plus local
+sanitizer/build results. These are not live-provider or production-load results.
+**Remaining:** `handle_event()` is not an authoritative serialized command queue;
+notification loss is possible; providers/observers must cooperate with shutdown;
+per-session threads have not been capacity-tested. Do not mark all of M2 complete.
 
-**Acceptance gate:** snapshots and subscribers agree on normalized metadata and
-ordering under concurrent producers; memory/queues stay within declared bounds;
-start failure and repeated stop release resources; no accepted call touches
-destroyed state; callback re-entry cannot deadlock the session.
+### M2.2 — Runtime Manager, registry and Session Supervisor (next)
 
-### M2.2 — Complete the pipeline adapter
+First implement a process-local ownership layer around existing sessions. Registry
+and supervisor can be internal roles of `RuntimeManager`, not separate services.
 
-Route conversation, model, and tool observations through the same session
-ingress, without duplicate delivery or self-publishing loops. Make state a
-projection of normalized events. Implement explicit control handling rather than
-leaving `handle_event` as a no-op.
+**Admission and registry:** atomically reserve an ID/incarnation and capacity before
+invoking a factory. Bound total reservations, queued starts and ID length. Count
+starting/stopping/retiring entries against capacity. Return explicit rejection
+reasons and separate startup/retirement tickets. Use handles scoped to runtime and
+incarnation; stale callbacks cannot remove or fail a reused ID. Do not expose owning
+session pointers.
 
-Remove interruption triggered by arbitrary audio frames. Use validated speech
-and interruption policy signals; keep input ingestion independent of output.
-Demote the legacy exclusive `Listening/Thinking/Speaking` state to internal
-compatibility or remove it once covered. `SessionExecutor` remains an agent
-history lane, not the global interaction controller.
+**Remove and lifetime:** close entry admission immediately; stop cooperatively;
+wait for admitted operations, session callbacks and dependency teardown before
+releasing capacity. Handle removal before/during startup and shutdown races. Own
+session-specific dependencies in a lifetime bundle. Binary-owned shared services
+outlive manager shutdown. No joins/destruction inside registry locks or callbacks.
 
-**Acceptance gate:** the real pipeline runs through `ConversationSession`; its
-model/tool/voice events and metrics are complete; silence/input frames alone do
-not cancel output; intentional speech and cancellation follow declared policy;
-existing streaming and deadline behavior remains covered.
+**Notify queue:** bound runtime notifications independently of per-session timelines.
+Use ordered sequences, explicit drops and observer-failure counters. Publish identity,
+phase and reason only. Registry mutation and definitive completion tickets are not
+best-effort; a full notification queue must not lose removal or failure accounting.
 
-### M2.3 — Unify native duplex and playback control
+**Supervisor:** reconcile authoritative lifecycle state and explicit fatal reports,
+not only lifecycle notifications. Isolate factory/start/operation failures to one
+session, clean up and retire it. Initial policy: stop-and-retire, **no auto-restart**.
+Keep hung resources charged; bounded waits do not imply resources were destroyed.
+Uncaught native thread exceptions, crashes and forced process exit need external
+supervision. Do not promise hard cancellation or watchdog coverage in this slice.
 
-Add `NativeDuplexConversationEngine` around `FullDuplexConversation`. Reuse its
-continuous input and response/sample offsets. Separate generated, queued,
-playing, stopped, and completed output. Keep completed-generation audio
-interruptible until playback actually finishes. Fence late audio/callbacks by
-session and response generation.
+**Binary shutdown:** `Running -> Draining -> Stopped`; fence global ingress, stop
+reservations, reap sessions, finish notifications and join workers before releasing
+shared services. Provide non-waiting callback requests and owner-thread waits.
+Signal integration stays in the executable, not process-global library handlers.
 
-Extend capabilities only where needed, including audio formats, policy owner,
-and playback reporting. Negotiate provider/runtime/application ownership of EOU
-and interruption to prevent duplicate commits or cancellations. Backchannels
-and user overlap must be representable without forcing an interruption.
+**Acceptance gate:** deterministic tests cover concurrent duplicate/capacity adds,
+full startup queue, factory/start failure rollback, remove during startup, operation
+leases, stale handles/ID reuse, queue overflow and observer exceptions/re-entry,
+independent-session failure, terminal state without notifications, callback draining,
+and repeated/racing shutdown. A small executable demonstrates binary-owned lifetime.
+All existing tests pass; sanitizer results are recorded without inventing coverage.
 
-**Acceptance gate:** both engines pass one lifecycle, input, ordering, and
-cancellation conformance suite. Tests include input while output is active,
-provider completion before playback completion, late packets after cancellation,
-format/offset correctness, and capability mismatch. A player/transport fixture
-confirms output flush; a cancellation API return alone is insufficient.
+**Scope boundary:** the first slice is fixed-capacity, in-process, stop-and-retire.
+Per-tenant quotas, shared scheduling, supervisor deadlines/watchdogs, process workers,
+restart budgets, persistent registry and distributed leases are M4 follow-ups.
 
-### M2.4 — Interaction metrics and policy fixtures
+### M2.3 — Complete pipeline event/control integration
 
-Separate first generated audio, first audible acknowledgement, first useful
-answer, cancellation dispatch, and physical output stop. Add explicit overlap
-and interruption outcome measurements. Begin a small regression corpus for
-noise, backchannels, corrections, delayed events, and premature EOU decisions.
+Wire conversation/model/tool events into one ingress without duplicates. Make state
+a normalized projection and implement explicit commands. Replace interruption on
+arbitrary audio frames with speech/policy signals; input remains live during output.
+Keep the history executor internal rather than a global interaction controller.
 
-**M2 exit demonstration:** an application selects either engine through the same
-session API, keeps microphone input live during output, and handles a deliberate
-interruption without stale output or state corruption. The evidence must use
-real engine adapters, not only a fake engine that toggles two booleans.
+**Gate:** the real pipeline through `ConversationSession` has complete metrics,
+intentional cancellation, silence that does not interrupt, and preserved streaming,
+deadline and stale-output behavior. This depends on M2.1, with M2.2 hosting examples.
+
+### M2.4 — Native duplex and playback unification
+
+Add the native engine adapter and a shared conformance suite. Separate generated,
+queued, playing, stopped and completed output. Generation completion must not make
+still-playing audio uninterruptible. Fence response/session generations; define
+sample-frame offsets, formats and playback acknowledgement. Negotiate one owner
+for EOU/interruption and reject unsupported required capabilities.
+
+**Gate:** both real engine adapters pass lifecycle/input/cancellation tests, including
+input during output, late packets, provider completion before playback completion,
+format/offset checks and capability mismatch. A player fixture confirms flush; a
+cancel return does not prove silence. No model-name-only integration claims.
+
+### M2.5 — Interaction metrics and policy fixtures
+
+Separate first generated audio, first audible acknowledgement, useful answer,
+cancellation dispatch and physical stop. Add overlap/backchannel outcomes and small
+noise/correction/EOU regression fixtures. Include runtime admission and retirement
+measurements; derive SLOs from evidence rather than universal guessed numbers.
+
+**M2 demonstration:** one binary safely hosts multiple managed sessions, selects
+pipeline or native engine behind one API, keeps microphone input live during output,
+and interrupts deliberately without stale output, resource leaks or lost retirement.
 
 ## 6. M3 — Delegate
 
-**Goal:** custom agents perform asynchronous work without owning the speaker or
-blocking the interaction control path.
+**M3.1:** minimal structured asynchronous agent/delegation API, task identity,
+immutable context versions, deadline/cancellation/budget propagation and one terminal
+outcome. Adapt the existing loop, deterministic local logic and remote agents.
+Conversation policy owns speech; acknowledgements do not replace meaningful results.
 
-### M3.1 — Minimal agent and delegation contract
+**M3.2:** tools separate validation, authorization, approval, invocation and audit.
+Start with native/HTTP, then MCP as an adapter. Explicit idempotency rules protect
+side effects; untrusted native code requires isolation. Never repeat an action merely
+because a session or agent restarted.
 
-Introduce structured requests, task/delegation IDs, deadlines, cancellation,
-budgets, and asynchronous progress/content/result events. Provide adapters for
-the existing LLM/tool loop, a deterministic local agent, and a remote agent.
-Keep the new interface small; a string-returning synchronous `Run()` is not the
-primary contract.
+**M3.3:** replaceable ContextBuilder with bounded task views; separate conversation,
+agent history, task data and opt-in persistent memory. Preserve provenance, consent,
+retention/deletion and heard-versus-unheard output semantics.
 
-Use context versions and output generations to reject obsolete results. Give
-each invocation one terminal outcome, with deduplication for retried remote
-events. Separate cancellation request from confirmed termination. A task that
-ignores cancellation may finish externally without being allowed to speak locally.
-
-Delegation policy decides whether to acknowledge once, remain silent, or expose
-meaningful progress. Output arbitration remains in the conversation controller.
-Private model reasoning is neither required nor a public progress contract.
-
-**Acceptance gate:** the same conversation accepts local and remote custom-agent
-implementations; a delayed task does not block audio/control; a corrected user
-request supersedes obsolete output; cancellation and deadline propagation are
-tested; partial results and errors are structured and correlated.
-
-### M3.2 — Safe tool execution
-
-Build provider-independent tool discovery/invocation around validation,
-authorization, approval for sensitive actions, cancellation, and audit. Support
-native and HTTP tools first; add MCP as an adapter when the execution contract
-is stable. Do not make an external protocol the internal security model.
-
-Specify idempotency and retry behavior for side-effecting tools. Distinguish
-read-only cancelled work from already committed actions requiring status
-reconciliation or compensation. Do not run untrusted native plugins in process
-merely because they implement a tool interface.
-
-**Acceptance gate:** unauthorized calls are blocked before execution; replay never
-runs live side effects; retry and late-result tests cannot duplicate an externally
-visible action; approvals and terminal outcomes are traceable.
-
-### M3.3 — Context and memory boundaries
-
-Create a replaceable `ContextBuilder` that supplies immutable, versioned task
-views. Separate conversation state, agent history, task-local data, and durable
-memory. Start with bounded context selection; add summarization, retrieval, and
-memory adapters only for demonstrated needs.
-
-**Acceptance gate:** tasks see a reproducible context version; cancelled/unheard
-assistant output is not represented as heard; sensitive data is scoped and
-redacted; persistent memory is opt-in with provenance and deletion behavior.
-
-**M3 exit demonstration:** while a slow read-only task is running, the assistant
-acknowledges once, continues listening, accepts a user correction, and presents
-only the relevant result. A separate side-effecting-tool fixture proves that
-stopping speech cannot silently undo or repeat an action.
+**Gate:** a slow task does not block interaction; user correction suppresses obsolete
+results; terminal events/deadlines are tested; unauthorized tools cannot execute;
+stopping speech cannot silently undo/repeat actions; local/remote adapters use the
+same boundary. Private model reasoning is not required as progress data.
 
 ## 7. M4 — Operate
 
-**Goal:** operate within declared resource, correctness, privacy, and recovery
-limits. Expand the safeguards introduced in M1–M3 rather than adding them late.
+Build on M2.2 admission/supervision, rather than introducing lifecycle ownership here.
+Add per-tenant/provider budgets, fairness, rate limits, cost accounting and circuit
+breakers after measuring the initial runtime. Reduce per-session thread cost through
+shared scheduling only while preserving the lifetime and admission contracts.
 
-### Resource and failure handling
+Add startup/stop/idle watchdog policies with observable deadlines and escalation.
+Do not free live resources after timeouts. Test controlled process-worker termination
+and external host supervision. Add capped restart/backoff with fresh incarnations,
+context reconciliation and side-effect deduplication before advertising recovery.
+Keep transparent migration and provider-state continuity deferred until supportable.
 
-Add admission control, per-session/provider limits, fairness, cost accounting,
-rate-limit handling, circuit breakers, and explicit degraded modes. Test long
-sessions, slow consumers, provider disconnects, tool timeouts, and stalled audio
-output. Drain sessions safely on shutdown.
+Extend fixtures into opt-in recording and deterministic control replay. Record schema,
+policy versions, clock mappings, outcomes and gaps; disable live side effects.
+Promote production failures into reviewed regression fixtures with privacy controls.
 
-Fallback must state which context, capabilities, pending audio, and tasks can be
-preserved. Start with explicit session/engine restart policies; defer transparent
-session migration until provider state semantics make it supportable.
+**Gate:** sustained declared load stays within bounds; fault injection yields explicit
+outcomes; hard failures are isolated at the right process boundary; representative
+incidents replay; recovery does not repeat actions or speech. Report p50/p95/p99,
+CPU, memory, cost, admission loss and failed/cancelled samples with environment details.
 
-### Recording, replay, and evaluation
+## 8. Immediate implementation queue
 
-Extend early fixtures into privacy-aware recording and replay. Persist versioned
-control events and selected provider/tool outcomes; audio/payload recording stays
-opt-in with retention and deletion policies. Include event gaps, clock mappings,
-and policy versions in the manifest.
-
-Replay deterministically tests reducers and recorded outcomes; it does not
-promise that a live model/tool call will reproduce the same answer. Side effects
-are disabled. Promote failures into reviewed regression fixtures and compare
-interaction correctness alongside latency.
-
-### Operations gate
-
-Declare hardware, provider/configuration, workload, concurrency, queue limits,
-network assumptions, and percentile methodology. Establish SLO thresholds from
-measured baselines rather than inventing universal latency numbers. Report task
-success, interruption correctness, audible gaps, p50/p95/p99 latency, CPU,
-memory, cost, and sample exclusions.
-
-**Acceptance gate:** sustained load stays within declared bounds; fault injection
-produces explicit outcomes rather than silent hangs; representative failures
-replay as regression tests; privacy controls are exercised; recovery does not
-replay externally visible actions or stale speech.
-
-## 8. Later — integrations and bounded orchestration
-
-Prioritize adapters requested by real applications: RTC transports, verified
-native speech providers, existing agent frameworks, and selected tools. Each
-adapter needs a capability profile and conformance tests, not just an example
-that connects successfully. Do not add an integration based only on a vendor's
-model name or a benchmark claim.
-
-Sub-agents, parallel delegation, handoff, durable background tasks, and
-human-in-the-loop workflows are demand-led extensions after the task/context/
-permission contracts stabilize. A bounded task tree can support these without
-turning RealFlow into another general workflow framework. Video/avatar support
-should extend timestamped media and participant contracts rather than redefine
-session lifetime.
-
-## 9. Immediate implementation queue
-
-The most valuable next change is to **finish the continuous-session foundation
-already introduced**, not to add more provider names.
-
-| Order | Small, reviewable change | Required proof |
+| Order | Change | Required proof |
 |---|---|---|
-| 1 | Canonical, bounded `EventTimeline` admission and ordered observer delivery. | Stored/delivered sequence and timestamp equality; concurrent order; capacity behavior. |
-| 2 | Session start/stop, startup failure, callback, and teardown safety. | Race/re-entry/failure tests and sanitizer evidence where supported. |
-| 3 | Complete pipeline event wiring and explicit interruption controls. | Real pipeline integration test with model/tool metrics and input during output. |
-| 4 | Native duplex engine adapter with separate playback lifecycle. | Shared conformance tests, late-packet fencing, and player-confirmed stop. |
-| 5 | Minimal custom-agent/delegation vertical slice. | Slow task + user correction + obsolete-result suppression demonstration. |
+| Done | M2.1 session/timeline foundation. | Existing PR #3 evidence; continue regression coverage. |
+| 1 | M2.2 runtime registry, admission, notify queue and stop-and-retire supervisor. | Capacity never releases early; failures and dropped notifications cannot orphan sessions. |
+| 2 | Complete pipeline events and explicit controls. | Full model/tool/voice integration and input during output. |
+| 3 | Native duplex/playback adapter. | Shared conformance, late-packet fencing and player-confirmed stop. |
+| 4 | Minimal custom-agent delegation. | Slow task, correction and obsolete-result suppression. |
 
-Keep mechanical renames in a separate review. Steps 1–2 are prerequisites for
-calling the new session API reliable; they can be developed alongside the
-adapter work but must pass before M2 is declared complete.
+Review the runtime design first, then publish the bounded implementation separately.
+Keep mechanical naming changes separate. Registry ownership is foundational, not an
+excuse to implement every deployment/orchestration feature in the next PR.
 
-## 10. Release and scope discipline
+## 9. Release discipline and later work
 
-For each milestone, include an executable reference example, regression tests,
-API/migration notes, capability limitations, and measured evidence. Run
-`make test` and CMake/CTest; use sanitizers for lifetime/concurrency changes and
-transport/player tests for audible-output claims. A checked-in test is not proof
-that it has run successfully.
+Every slice includes tests, an executable/reference path, API/migration notes and
+explicit limitations. Run Make and CMake/CTest; use sanitizers for lifetime changes.
+A checked-in test is not evidence it passed. Device latency needs transport/player
+evidence; repository tests cannot certify a paid provider or production scale.
 
-Explicitly defer a generic graph DSL, autonomous swarms, a plugin marketplace,
-model training, proprietary evaluation claims, and transparent cross-provider
-session migration. A proposed feature should improve realtime human–agent
-interaction; otherwise prefer an integration over expanding the core.
-
-The architecture remains provider-neutral. Native duplex, cascade, custom
-agents, and future media are implementations of the runtime contracts, not
-reasons to replace those contracts on each model release.
+Later integrations are demand-led: RTC transports, verified native providers,
+framework adapters and bounded sub-agent/handoff workflows. Defer a graph DSL,
+autonomous swarms, plugin marketplace, model training and transparent cross-provider
+migration. New multimodal media should extend timestamp/participant contracts rather
+than redefine runtime/session lifetime.
