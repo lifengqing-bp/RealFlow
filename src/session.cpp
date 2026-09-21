@@ -12,26 +12,47 @@ AsyncSession::AsyncSession(std::string session_id, Agent& agent,
   if (session_id_.empty()) throw std::invalid_argument("session id is required");
 }
 
-TurnHandle AsyncSession::submit(std::string user_text) {
-  return executor_.submit(
-      session_id_, [this, text = std::move(user_text)](
-                       const CancellationToken& token,
-                       const std::string& turn_id) mutable {
-        if (token.cancelled()) throw std::runtime_error("turn cancelled");
+TurnHandle AsyncSession::submit(std::string user_text, TurnOptions options) {
+  return submit_streaming(std::move(user_text),
+                          [](const std::string&) { return true; }, {}, {},
+                          std::move(options));
+}
+
+TurnHandle AsyncSession::submit_streaming(
+    std::string user_text, LlmProvider::TextDeltaSink on_text_delta,
+    Completion on_completed, Failure on_failed, TurnOptions options) {
+  return executor_.submit_turn(
+      session_id_, std::move(options),
+      [this, text = std::move(user_text),
+       on_text_delta = std::move(on_text_delta),
+       on_completed = std::move(on_completed),
+       on_failed = std::move(on_failed)](const TurnContext& context) mutable {
         try {
-          std::string reply = agent_.run(
-              std::move(text), session_id_, turn_id,
-              [&token] { return token.cancelled(); });
-          if (!token.cancelled()) return reply;
+          if (context.stop_requested())
+            throw std::runtime_error(context.expired() ? "turn deadline exceeded"
+                                                       : "turn cancelled");
+          context.transition(TurnState::ModelStreaming);
+          std::string reply = agent_.run_streaming(
+              std::move(text), session_id_, context.turn_id(),
+              on_text_delta,
+              [&context] { return context.stop_requested(); },
+              context.trace_id());
+          if (context.stop_requested())
+            throw std::runtime_error(context.expired() ? "turn deadline exceeded"
+                                                       : "turn cancelled");
+          if (on_completed) on_completed(context, reply);
+          return reply;
         } catch (...) {
-          if (!token.cancelled()) throw;
+          const auto error = std::current_exception();
+          if (on_failed) on_failed(context, error);
+          if (events_ && context.stop_requested()) {
+            events_->publish(
+                {context.expired() ? EventType::Error : EventType::TurnCancelled,
+                 session_id_, context.turn_id(), 0, {},
+                 context.expired() ? "deadline" : "cancelled", {}});
+          }
+          std::rethrow_exception(error);
         }
-        if (token.cancelled()) {
-          if (events_) events_->publish(
-              {EventType::TurnCancelled, session_id_, turn_id, 0, {}, {}, {}});
-          throw std::runtime_error("turn cancelled");
-        }
-        throw std::runtime_error("turn failed");
       });
 }
 

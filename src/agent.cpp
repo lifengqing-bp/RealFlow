@@ -6,16 +6,36 @@
 namespace byteturn {
 
 bool ToolRegistry::add(std::string name, ToolHandler handler) {
+  return add(std::move(name),
+             [handler = std::move(handler)](const std::string& arguments,
+                                            const std::function<bool()>&) {
+               return handler(arguments);
+             });
+}
+
+bool ToolRegistry::add(std::string name, CancellableToolHandler handler) {
   return tools_.emplace(std::move(name), std::move(handler)).second;
 }
 
 std::string ToolRegistry::invoke(const std::string& name,
                                  const std::string& arguments) const {
+  return invoke(name, arguments, {});
+}
+
+std::string ToolRegistry::invoke(
+    const std::string& name, const std::string& arguments,
+    const std::function<bool()>& stop_requested) const {
   const auto it = tools_.find(name);
   if (it == tools_.end()) return "error: unknown tool: " + name;
+  if (stop_requested && stop_requested())
+    throw std::runtime_error("tool cancelled before execution");
   try {
-    return it->second(arguments);
+    std::string result = it->second(arguments, stop_requested);
+    if (stop_requested && stop_requested())
+      throw std::runtime_error("tool cancelled during execution");
+    return result;
   } catch (const std::exception& e) {
+    if (stop_requested && stop_requested()) throw;
     return "error: tool failed: " + std::string(e.what());
   }
 }
@@ -36,17 +56,19 @@ std::string Agent::run(std::string user_text, std::string session_id,
                        std::string turn_id, std::function<bool()> cancelled) {
   return run_streaming(std::move(user_text), std::move(session_id),
                        std::move(turn_id), [](const std::string&) { return true; },
-                       std::move(cancelled));
+                       std::move(cancelled), {});
 }
 
 std::string Agent::run_streaming(std::string user_text, std::string session_id,
                                  std::string turn_id,
                                  LlmProvider::TextDeltaSink on_text_delta,
-                                 std::function<bool()> cancelled) {
+                                 std::function<bool()> cancelled,
+                                 std::string trace_id) {
   const auto emit = [&](EventType type, std::string name = {},
                         std::string data = {}) {
     if (events_) events_->publish(
-        {type, session_id, turn_id, 0, {}, std::move(name), std::move(data)});
+        {type, session_id, turn_id, 0, {}, std::move(name), std::move(data),
+         trace_id});
   };
   emit(EventType::TurnStarted);
   const auto history_checkpoint = history_.size();
@@ -91,7 +113,14 @@ std::string Agent::run_streaming(std::string user_text, std::string session_id,
 
     for (const auto& call : turn.tool_calls) {
       emit(EventType::ToolStarted, call.name, call.arguments);
-      const auto result = tools_.invoke(call.name, call.arguments);
+      std::string result;
+      try {
+        result = tools_.invoke(call.name, call.arguments, cancelled);
+      } catch (const std::exception& e) {
+        history_.resize(history_checkpoint);
+        emit(EventType::Error, "tool", e.what());
+        throw;
+      }
       emit(EventType::ToolCompleted, call.name, result);
       history_.push_back({Role::Tool, result, call.name, {}, call.id});
     }

@@ -1,7 +1,7 @@
 .PHONY: all test clean
 CXX ?= c++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Wpedantic -O2 -pthread -Iinclude
-SOURCES := src/agent.cpp src/conversation.cpp src/event.cpp src/executor.cpp src/openai_compatible.cpp src/session.cpp src/observability.cpp src/curl_transport.cpp src/sentence_segmenter.cpp src/incremental_tts.cpp
+SOURCES := src/agent.cpp src/conversation.cpp src/event.cpp src/executor.cpp src/full_duplex_conversation.cpp src/openai_compatible.cpp src/session.cpp src/observability.cpp src/curl_transport.cpp src/sentence_segmenter.cpp src/incremental_tts.cpp src/turn_context.cpp
 LDLIBS := -lcurl
 
 all: build/byteturn_cli

@@ -135,6 +135,11 @@ void RuntimeObserver::on_event(const Event& event) {
     starts_[key(event, "asr_final")] = event.timestamp;
     starts_[key(event, "s2s_first_audio")] = event.timestamp;
     starts_[key(event, "conversation_turn")] = event.timestamp;
+  } else if (event.type == EventType::InputSpeechEnded) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    starts_[key(event, "duplex_first_audio")] = event.timestamp;
+    starts_[key(event, "duplex_first_audible")] = event.timestamp;
+    starts_[key(event, "conversation_turn")] = event.timestamp;
   } else if (event.type == EventType::TranscriptFinal) {
     finish("asr_final", "byteturn_asr_final_latency_ms");
   } else if (event.type == EventType::TurnCompleted) {
@@ -150,9 +155,46 @@ void RuntimeObserver::on_event(const Event& event) {
   } else if (event.type == EventType::FirstAudio) {
     finish("tts_first_audio", "byteturn_tts_first_audio_latency_ms");
     finish("s2s_first_audio", "byteturn_s2s_first_audio_latency_ms");
+  } else if (event.type == EventType::AudioOutput) {
+    Event session_event = event;
+    session_event.turn_id.clear();
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = starts_.find(key(session_event, "duplex_first_audio"));
+    if (it != starts_.end()) {
+      metrics_.observe("byteturn_s2s_first_audio_latency_ms",
+                       elapsed_ms(it->second, event.timestamp));
+      starts_.erase(it);
+    }
+  } else if (event.type == EventType::PlaybackStarted) {
+    Event session_event = event;
+    session_event.turn_id.clear();
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = starts_.find(key(session_event, "duplex_first_audible"));
+    if (it != starts_.end()) {
+      metrics_.observe("byteturn_s2s_first_audible_latency_ms",
+                       elapsed_ms(it->second, event.timestamp));
+      starts_.erase(it);
+    }
+  } else if (event.type == EventType::BargeInDetected) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    starts_[key(event, "barge_in_stop")] = event.timestamp;
+  } else if (event.type == EventType::OutputCancelled) {
+    finish("barge_in_stop", "byteturn_barge_in_stop_latency_ms");
   } else if (event.type == EventType::SpeechCompleted) {
     finish("tts_total", "byteturn_tts_total_duration_ms");
   } else if (event.type == EventType::ConversationTurnCompleted) {
+    Event session_event = event;
+    session_event.turn_id.clear();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      const auto it = starts_.find(key(session_event, "conversation_turn"));
+      if (it != starts_.end()) {
+        metrics_.observe("byteturn_conversation_turn_duration_ms",
+                         elapsed_ms(it->second, event.timestamp));
+        starts_.erase(it);
+        return;
+      }
+    }
     finish("conversation_turn", "byteturn_conversation_turn_duration_ms");
   } else if (event.type == EventType::ToolCompleted) {
     finish("tool", "byteturn_tool_duration_ms");
@@ -176,7 +218,8 @@ void JsonEventLogger::write(const Event& event) {
           << event_type_name(event.type) << "\",\"session_id\":\""
           << json_escape(event.session_id) << "\",\"turn_id\":\""
           << json_escape(event.turn_id) << "\",\"name\":\""
-          << json_escape(event.name) << '"';
+          << json_escape(event.name) << "\",\"trace_id\":\""
+          << json_escape(event.trace_id) << '"';
   if (options_.include_payload)
     output_ << ",\"data\":\"" << json_escape(event.data) << '"';
   output_ << "}\n";
@@ -184,6 +227,9 @@ void JsonEventLogger::write(const Event& event) {
 
 const char* event_type_name(EventType type) {
   switch (type) {
+    case EventType::RealtimeSessionStarted: return "realtime_session_started";
+    case EventType::InputSpeechStarted: return "input_speech_started";
+    case EventType::InputSpeechEnded: return "input_speech_ended";
     case EventType::AsrEndOfUtterance: return "asr_end_of_utterance";
     case EventType::TranscriptPartial: return "transcript_partial";
     case EventType::TranscriptFinal: return "transcript_final";
@@ -198,10 +244,15 @@ const char* event_type_name(EventType type) {
     case EventType::TtsChunkStarted: return "tts_chunk_started";
     case EventType::FirstAudio: return "first_audio";
     case EventType::AudioOutput: return "audio_output";
+    case EventType::PlaybackStarted: return "playback_started";
+    case EventType::PlaybackProgress: return "playback_progress";
+    case EventType::BargeInDetected: return "barge_in_detected";
+    case EventType::OutputCancelled: return "output_cancelled";
     case EventType::SpeechCompleted: return "speech_completed";
     case EventType::ConversationTurnCompleted: return "conversation_turn_completed";
     case EventType::TurnCompleted: return "turn_completed";
     case EventType::TurnCancelled: return "turn_cancelled";
+    case EventType::RealtimeSessionClosed: return "realtime_session_closed";
     case EventType::Error: return "error";
   }
   return "unknown";

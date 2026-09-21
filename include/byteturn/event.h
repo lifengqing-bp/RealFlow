@@ -8,10 +8,14 @@
 #include <string>
 #include <unordered_map>
 #include <memory>
+#include <utility>
 
 namespace byteturn {
 
 enum class EventType {
+  RealtimeSessionStarted,
+  InputSpeechStarted,
+  InputSpeechEnded,
   AsrEndOfUtterance,
   TranscriptPartial,
   TranscriptFinal,
@@ -26,14 +30,29 @@ enum class EventType {
   TtsChunkStarted,
   FirstAudio,
   AudioOutput,
+  PlaybackStarted,
+  PlaybackProgress,
+  BargeInDetected,
+  OutputCancelled,
   SpeechCompleted,
   ConversationTurnCompleted,
   TurnCompleted,
   TurnCancelled,
+  RealtimeSessionClosed,
   Error
 };
 
 struct Event {
+  Event(EventType event_type, std::string session = {}, std::string turn = {},
+        std::uint64_t event_sequence = 0,
+        std::chrono::steady_clock::time_point event_timestamp = {},
+        std::string event_name = {}, std::string event_data = {},
+        std::string trace = {})
+      : type(event_type), session_id(std::move(session)), turn_id(std::move(turn)),
+        sequence(event_sequence), timestamp(event_timestamp),
+        name(std::move(event_name)), data(std::move(event_data)),
+        trace_id(std::move(trace)) {}
+
   EventType type;
   std::string session_id;
   std::string turn_id;
@@ -42,6 +61,7 @@ struct Event {
       std::chrono::steady_clock::now();
   std::string name;
   std::string data;
+  std::string trace_id;
 };
 
 class EventBus {

@@ -10,12 +10,14 @@ add_library(byteturn
   src/conversation.cpp
   src/event.cpp
   src/executor.cpp
+  src/full_duplex_conversation.cpp
   src/openai_compatible.cpp
   src/session.cpp
   src/observability.cpp
   src/curl_transport.cpp
   src/sentence_segmenter.cpp
   src/incremental_tts.cpp
+  src/turn_context.cpp
 )
 find_package(Threads REQUIRED)
 find_package(CURL REQUIRED)

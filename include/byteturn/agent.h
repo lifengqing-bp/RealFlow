@@ -22,7 +22,8 @@ class Agent {
   std::string run_streaming(std::string user_text, std::string session_id,
                             std::string turn_id,
                             LlmProvider::TextDeltaSink on_text_delta,
-                            std::function<bool()> cancelled = {});
+                            std::function<bool()> cancelled = {},
+                            std::string trace_id = {});
   const std::vector<Message>& history() const { return history_; }
 
  private:

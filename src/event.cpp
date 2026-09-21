@@ -36,6 +36,9 @@ void EventBus::publish(Event event) {
     event.sequence = next_sequence_++;
     if (event.timestamp.time_since_epoch().count() == 0)
       event.timestamp = std::chrono::steady_clock::now();
+    if (event.trace_id.empty() && !event.session_id.empty() &&
+        !event.turn_id.empty())
+      event.trace_id = event.session_id + ":" + event.turn_id;
     handlers.reserve(handlers_.size());
     for (const auto& entry : handlers_) handlers.push_back(entry.second);
   }

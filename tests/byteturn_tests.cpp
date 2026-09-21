@@ -6,6 +6,8 @@
 #include "byteturn/curl_transport.h"
 #include "byteturn/sentence_segmenter.h"
 #include "byteturn/incremental_tts.h"
+#include "byteturn/conversation.h"
+#include "byteturn/full_duplex_conversation.h"
 
 #include <atomic>
 #include <chrono>
@@ -14,6 +16,7 @@
 #include <mutex>
 #include <sstream>
 #include <thread>
+#include <condition_variable>
 
 namespace {
 using namespace byteturn;
@@ -71,6 +74,119 @@ class CancellableLlm final : public LlmProvider {
     throw std::runtime_error("network cancelled");
   }
   std::promise<void> started;
+};
+
+class ImmediateAsr final : public AsrProvider {
+ public:
+  void reset() override { ++resets; }
+  void push(const AudioFrame& frame,
+            const std::function<void(std::string, bool)>& callback) override {
+    if (frame.end_of_utterance) callback("hello", true);
+  }
+  std::atomic<int> resets{0};
+};
+
+class BlockingAsr final : public AsrProvider {
+ public:
+  void reset() override {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      released = true;
+    }
+    cv.notify_all();
+  }
+  void push(const AudioFrame&,
+            const std::function<void(std::string, bool)>&) override {
+    std::unique_lock<std::mutex> lock(mutex);
+    started = true;
+    cv.notify_all();
+    cv.wait(lock, [&] { return released; });
+  }
+  void wait_started() {
+    std::unique_lock<std::mutex> lock(mutex);
+    cv.wait(lock, [&] { return started; });
+  }
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool started = false;
+  bool released = false;
+};
+
+class BlockingStreamLlm final : public LlmProvider {
+ public:
+  LlmTurn complete(const std::vector<Message>&) override { return {}; }
+  LlmTurn stream(const std::vector<Message>&, const TextDeltaSink& sink,
+                 const std::function<bool()>& cancelled) override {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      started = true;
+    }
+    cv.notify_all();
+    std::unique_lock<std::mutex> lock(mutex);
+    cv.wait(lock, [&] { return released || cancelled(); });
+    if (cancelled()) throw std::runtime_error("cancelled");
+    lock.unlock();
+    sink("Hello from the asynchronous runtime!");
+    return {"Hello from the asynchronous runtime!", {}, true};
+  }
+  void wait_started() {
+    std::unique_lock<std::mutex> lock(mutex);
+    cv.wait(lock, [&] { return started; });
+  }
+  void release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      released = true;
+    }
+    cv.notify_all();
+  }
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool started = false;
+  bool released = false;
+};
+
+class FakeRealtimeSession final : public RealtimeSpeechSession {
+ public:
+  explicit FakeRealtimeSession(RealtimeSpeechProvider::EventSink sink)
+      : sink(std::move(sink)) {}
+  bool push_audio(const AudioFrame&) override {
+    ++pushed;
+    return accept_audio;
+  }
+  void commit_input() override { ++commits; }
+  void cancel_response(const std::string& id, std::uint64_t samples,
+                       int rate) override {
+    cancelled_id = id;
+    cancelled_samples = samples;
+    cancelled_rate = rate;
+    ++cancels;
+  }
+  void close() override { closed = true; }
+  void emit(RealtimeEvent event) { sink(std::move(event)); }
+
+  RealtimeSpeechProvider::EventSink sink;
+  std::atomic<int> pushed{0};
+  std::atomic<int> commits{0};
+  std::atomic<int> cancels{0};
+  bool accept_audio = true;
+  bool closed = false;
+  std::string cancelled_id;
+  std::uint64_t cancelled_samples = 0;
+  int cancelled_rate = 0;
+};
+
+class FakeRealtimeProvider final : public RealtimeSpeechProvider {
+ public:
+  std::unique_ptr<RealtimeSpeechSession> connect(
+      const RealtimeSessionConfig& value, EventSink sink) override {
+    config = value;
+    auto owned = std::make_unique<FakeRealtimeSession>(std::move(sink));
+    session = owned.get();
+    return owned;
+  }
+  RealtimeSessionConfig config;
+  FakeRealtimeSession* session = nullptr;
 };
 
 void require(bool condition, const char* message) {
@@ -133,6 +249,86 @@ void test_session_executor() {
   a.result.get();
   b.result.get();
   require(max_active == 2, "different sessions can run concurrently");
+}
+
+void test_executor_overload_and_deadline() {
+  SessionExecutor executor(SessionExecutorConfig{1, 1, 8});
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool release = false;
+  bool running_started = false;
+  auto blocker = executor.submit("busy", [&](const CancellationToken&,
+                                              const std::string&) {
+    std::unique_lock<std::mutex> lock(mutex);
+    running_started = true;
+    cv.notify_all();
+    cv.wait(lock, [&] { return release; });
+    return std::string("done");
+  });
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    cv.wait(lock, [&] { return running_started; });
+  }
+  auto queued = executor.submit("busy", [](const CancellationToken&,
+                                            const std::string&) {
+    return std::string("queued");
+  });
+  bool overloaded = false;
+  try {
+    (void)executor.submit("busy", [](const CancellationToken&,
+                                      const std::string&) {
+      return std::string("never");
+    });
+  } catch (const ExecutorOverloaded&) {
+    overloaded = true;
+  }
+  require(overloaded, "per-session pending-turn limit enforced");
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    release = true;
+  }
+  cv.notify_all();
+  require(blocker.result.get() == "done" && queued.result.get() == "queued",
+          "accepted work survives overload rejection");
+
+  SessionExecutor deadline_executor(SessionExecutorConfig{1, 2, 8});
+  release = false;
+  running_started = false;
+  auto running = deadline_executor.submit("deadline", [&](const CancellationToken&,
+                                                            const std::string&) {
+    std::unique_lock<std::mutex> lock(mutex);
+    running_started = true;
+    cv.notify_all();
+    cv.wait(lock, [&] { return release; });
+    return std::string("done");
+  });
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    cv.wait(lock, [&] { return running_started; });
+  }
+  TurnOptions options;
+  options.timeout = std::chrono::milliseconds(5);
+  auto expired = deadline_executor.submit_turn(
+      "deadline", options,
+      [](const TurnContext& context) {
+        if (context.stop_requested())
+          throw std::runtime_error("turn deadline exceeded");
+        return std::string("must not complete");
+      });
+  std::this_thread::sleep_for(std::chrono::milliseconds(15));
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    release = true;
+  }
+  cv.notify_all();
+  running.result.get();
+  bool timed_out = false;
+  try {
+    (void)expired.result.get();
+  } catch (const std::runtime_error&) {
+    timed_out = true;
+  }
+  require(timed_out, "deadline includes time spent waiting in session queue");
 }
 
 void test_openai_compatible_adapter() {
@@ -306,9 +502,163 @@ void test_cancellation_reaches_provider() {
   require(agent.history().size() == 1, "cancelled turn rolls back history");
 }
 
+void test_deadline_reaches_tool() {
+  ToolThenAnswer llm;
+  ToolRegistry tools;
+  std::promise<void> started_promise;
+  auto started = started_promise.get_future();
+  require(tools.add(
+              "double",
+              CancellableToolHandler{
+                  [&](const std::string&, const std::function<bool()>& stop) {
+                    started_promise.set_value();
+                    while (!stop()) std::this_thread::yield();
+                    return std::string("late");
+                  }}),
+          "register cancellable tool");
+  Agent agent(llm, tools);
+  SessionExecutor executor(1);
+  AsyncSession session("tool-deadline", agent, executor);
+  TurnOptions options;
+  options.timeout = std::chrono::milliseconds(10);
+  auto turn = session.submit("calculate", options);
+  started.wait();
+  bool timed_out = false;
+  try {
+    (void)turn.result.get();
+  } catch (const std::runtime_error&) {
+    timed_out = true;
+  }
+  require(timed_out, "turn deadline reaches cancellable tool");
+  require(agent.history().size() == 1, "timed-out tool turn rolls back history");
+}
+
+void test_conversation_is_asynchronous() {
+  ImmediateAsr asr;
+  BlockingStreamLlm llm;
+  RecordingTts tts;
+  ToolRegistry tools;
+  EventBus events;
+  Agent agent(llm, tools, 8, &events);
+  SessionExecutor executor(1);
+  AsyncSession session("voice", agent, executor, &events);
+  std::promise<void> completed_promise;
+  auto completed = completed_promise.get_future();
+  std::atomic<bool> completion_seen{false};
+  events.subscribe([&](const Event& event) {
+    if (event.type == EventType::ConversationTurnCompleted &&
+        !completion_seen.exchange(true))
+      completed_promise.set_value();
+  });
+  std::vector<AudioFrame> output;
+  std::mutex output_mutex;
+  Conversation conversation(
+      asr, session, tts, [](const std::string&, bool) {},
+      [&](const AudioFrame& frame) {
+        std::lock_guard<std::mutex> lock(output_mutex);
+        output.push_back(frame);
+      },
+      &events, "voice", ConversationConfig{4, std::chrono::milliseconds(1000), 2});
+
+  AudioFrame frame;
+  frame.samples = {1, 2, 3};
+  frame.end_of_utterance = true;
+  require(conversation.push_audio(frame), "audio accepted without waiting for provider");
+  llm.wait_started();
+  require(conversation.state() == ConversationState::Thinking,
+          "LLM runs asynchronously after ASR final");
+  llm.release();
+  require(completed.wait_for(std::chrono::seconds(1)) == std::future_status::ready,
+          "asynchronous voice turn completes");
+  std::lock_guard<std::mutex> lock(output_mutex);
+  require(!output.empty(), "incremental TTS produced audio");
+}
+
+void test_full_duplex_playback_aware_barge_in() {
+  FakeRealtimeProvider provider;
+  EventBus events;
+  MetricsRegistry metrics;
+  RuntimeObserver observer(events, metrics);
+  std::vector<DuplexAudio> output;
+  std::vector<EventType> seen;
+  events.subscribe([&](const Event& event) { seen.push_back(event.type); });
+
+  FullDuplexConversation conversation(
+      provider, "duplex", [](const std::string&, bool) {},
+      [&](const DuplexAudio& audio) {
+        output.push_back(audio);
+        return true;
+      },
+      &events);
+  require(provider.config.server_vad, "server VAD propagated to provider");
+
+  AudioFrame input;
+  input.samples = {9, 8, 7};
+  require(conversation.push_audio(input),
+          "microphone input accepted while output session remains open");
+  for (int i = 0; i != 100 && provider.session->pushed.load() == 0; ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  require(provider.session->pushed == 1, "input audio streamed asynchronously");
+
+  provider.session->emit({RealtimeEventType::InputSpeechStarted, {}, {}, {}, {}});
+  provider.session->emit({RealtimeEventType::InputSpeechEnded, {}, {}, {}, {}});
+  provider.session->emit(
+      {RealtimeEventType::ResponseStarted, "response-1", {}, {}, {}});
+  RealtimeEvent audio;
+  audio.type = RealtimeEventType::AudioDelta;
+  audio.response_id = "response-1";
+  audio.audio = {{1, 2, 3, 4}, 24000, 1, false};
+  provider.session->emit(std::move(audio));
+  require(output.size() == 1 && output[0].start_sample == 0,
+          "native output audio carries a monotonic response offset");
+
+  conversation.playback_started("response-1");
+  conversation.acknowledge_playback("response-1", 2);
+  provider.session->emit({RealtimeEventType::InputSpeechStarted, {}, {}, {}, {}});
+  require(provider.session->cancels == 1 &&
+              provider.session->cancelled_id == "response-1" &&
+              provider.session->cancelled_samples == 2 &&
+              provider.session->cancelled_rate == 24000,
+          "barge-in truncates provider context at audible playback position");
+
+  RealtimeEvent stale_audio;
+  stale_audio.type = RealtimeEventType::AudioDelta;
+  stale_audio.response_id = "response-1";
+  stale_audio.audio = {{5, 6}, 24000, 1, false};
+  provider.session->emit(std::move(stale_audio));
+  require(output.size() == 1, "post-cancellation audio is discarded");
+  require(metrics.histogram("byteturn_s2s_first_audio_latency_ms").count == 1,
+          "native first-audio latency observed");
+  require(metrics.histogram("byteturn_s2s_first_audible_latency_ms").count == 1,
+          "physical playback boundary observed");
+  require(metrics.histogram("byteturn_barge_in_stop_latency_ms").count == 1,
+          "barge-in stop latency observed");
+}
+
+void test_audio_queue_overload() {
+  BlockingAsr asr;
+  ToolThenAnswer llm;
+  RecordingTts tts;
+  ToolRegistry tools;
+  Agent agent(llm, tools);
+  SessionExecutor executor(1);
+  AsyncSession session("audio-overload", agent, executor);
+  Conversation conversation(
+      asr, session, tts, [](const std::string&, bool) {},
+      [](const AudioFrame&) {}, nullptr, "audio-overload",
+      ConversationConfig{1, std::chrono::milliseconds(1000), 1});
+  AudioFrame frame;
+  frame.samples = {1};
+  require(conversation.push_audio(frame), "first audio frame accepted");
+  asr.wait_started();
+  require(conversation.push_audio(frame), "one audio frame may wait in queue");
+  require(!conversation.push_audio(frame), "audio overload rejects newest frame");
+}
+
 int main() {
   test_agent_and_events();
   test_session_executor();
+  test_executor_overload_and_deadline();
   test_openai_compatible_adapter();
   test_openai_sse_stream();
   test_sentence_segmenter();
@@ -316,5 +666,9 @@ int main() {
   test_observability();
   test_curl_policy();
   test_cancellation_reaches_provider();
+  test_deadline_reaches_tool();
+  test_conversation_is_asynchronous();
+  test_full_duplex_playback_aware_barge_in();
+  test_audio_queue_overload();
   std::cout << "all tests passed\n";
 }
