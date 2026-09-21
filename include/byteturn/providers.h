@@ -19,6 +19,11 @@ class LlmProvider {
  public:
   virtual ~LlmProvider() = default;
   virtual LlmTurn complete(const std::vector<Message>& history) = 0;
+  virtual LlmTurn complete(const std::vector<Message>& history,
+                           const std::function<bool()>& cancelled) {
+    (void)cancelled;
+    return complete(history);
+  }
 };
 
 class TtsProvider {
@@ -30,4 +35,3 @@ class TtsProvider {
 };
 
 }  // namespace byteturn
-

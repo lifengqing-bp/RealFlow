@@ -1,11 +1,13 @@
 #pragma once
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <memory>
 
 namespace byteturn {
 
@@ -45,11 +47,18 @@ class EventBus {
   void publish(Event event);
 
  private:
+  struct HandlerEntry {
+    explicit HandlerEntry(Handler value) : handler(std::move(value)) {}
+    Handler handler;
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::size_t active_calls = 0;
+    bool enabled = true;
+  };
   std::mutex mutex_;
-  std::unordered_map<Subscription, Handler> handlers_;
+  std::unordered_map<Subscription, std::shared_ptr<HandlerEntry>> handlers_;
   Subscription next_subscription_ = 1;
   std::uint64_t next_sequence_ = 1;
 };
 
 }  // namespace byteturn
-

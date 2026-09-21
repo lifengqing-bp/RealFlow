@@ -18,13 +18,20 @@ TurnHandle AsyncSession::submit(std::string user_text) {
                        const CancellationToken& token,
                        const std::string& turn_id) mutable {
         if (token.cancelled()) throw std::runtime_error("turn cancelled");
-        std::string reply = agent_.run(std::move(text), session_id_, turn_id);
+        try {
+          std::string reply = agent_.run(
+              std::move(text), session_id_, turn_id,
+              [&token] { return token.cancelled(); });
+          if (!token.cancelled()) return reply;
+        } catch (...) {
+          if (!token.cancelled()) throw;
+        }
         if (token.cancelled()) {
           if (events_) events_->publish(
               {EventType::TurnCancelled, session_id_, turn_id, 0, {}, {}, {}});
           throw std::runtime_error("turn cancelled");
         }
-        return reply;
+        throw std::runtime_error("turn failed");
       });
 }
 

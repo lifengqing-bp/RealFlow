@@ -235,7 +235,7 @@ HttpRequest OpenAiCompatibleLlm::make_request(
   std::string base = config_.base_url;
   while (!base.empty() && base.back() == '/') base.pop_back();
   HttpRequest request{"POST", base + "/chat/completions",
-                      {{"Content-Type", "application/json"}}, std::move(body)};
+                      {{"Content-Type", "application/json"}}, std::move(body), {}};
   if (!config_.api_key.empty())
     request.headers["Authorization"] = "Bearer " + config_.api_key;
   return request;
@@ -266,6 +266,14 @@ LlmTurn OpenAiCompatibleLlm::parse_response(const HttpResponse& response) {
 
 LlmTurn OpenAiCompatibleLlm::complete(const std::vector<Message>& history) {
   return parse_response(transport_.perform(make_request(history)));
+}
+
+LlmTurn OpenAiCompatibleLlm::complete(
+    const std::vector<Message>& history,
+    const std::function<bool()>& cancelled) {
+  HttpRequest request = make_request(history);
+  request.cancelled = cancelled;
+  return parse_response(transport_.perform(request));
 }
 
 }  // namespace byteturn

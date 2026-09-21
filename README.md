@@ -68,6 +68,33 @@ The adapter deliberately does not ship a TLS/HTTP stack. It can therefore use
 libcurl, an internal client, or a platform transport without adding that choice
 to ByteTurn's core ABI.
 
+`CurlHttpTransport` is the production transport supplied by this repository. It
+defaults to verified HTTPS, a 3-second connect timeout, a 30-second request
+timeout, an 8 MiB response limit, no redirect following, and up to three
+attempts for transient connection failures, `408`, `429`, and selected `5xx`
+responses. It honors `Retry-After` with capped exponential jitter and connects
+session cancellation to libcurl's progress callback. Each worker thread reuses
+its curl handle and connection cache, avoiding a fresh TCP/TLS handshake for
+every model turn.
+
+```cpp
+byteturn::MetricsRegistry metrics;
+byteturn::CurlTransportConfig network;
+network.metrics = &metrics;
+byteturn::CurlHttpTransport http(network);
+
+byteturn::OpenAiCompatibleConfig model;
+model.base_url = "https://api.openai.com/v1";
+model.api_key = std::getenv("OPENAI_API_KEY");
+model.model = "your-model";
+byteturn::OpenAiCompatibleLlm llm(model, http);
+```
+
+Attach `RuntimeObserver` to an `EventBus` for counters and latency histograms,
+then expose `MetricsRegistry::prometheus_text()` from the application's metrics
+endpoint. `JsonEventLogger` writes correlated JSON lines and excludes event
+payloads by default to avoid logging transcripts, prompts, and tool data.
+
 ## Repository layout
 
 - `include/byteturn/`: stable public interfaces and state machine

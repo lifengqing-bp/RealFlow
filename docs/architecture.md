@@ -47,3 +47,18 @@ off work rather than invoking a blocking provider directly.
 Track ASR finalization, LLM time-to-first-token, TTS time-to-first-audio,
 end-to-end response latency, and interruption-to-silence. Averages alone are not
 sufficient; report p50, p95, and p99 under a declared concurrency level.
+
+## Observability and network boundary
+
+`EventBus` is the correlation backbone. Session and turn IDs connect structured
+logs to model/tool/voice events. `RuntimeObserver` derives Prometheus counters
+and duration histograms without placing provider-specific instrumentation in the
+agent loop. Subscription removal waits for in-flight callbacks, so observers can
+be safely destroyed while other sessions are active.
+
+`CurlHttpTransport` owns HTTP mechanics: TLS verification, timeouts, response
+limits, retries, `Retry-After`, cancellation, and DNS/connect/TLS/first-byte/total
+timings. `OpenAiCompatibleLlm` owns only protocol serialization. HTTP retries can
+increase cost for requests whose response was lost; applications may set
+`max_attempts = 1` or disable `retry_http_errors` when duplicate inference is
+unacceptable.

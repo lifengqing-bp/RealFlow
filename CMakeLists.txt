@@ -12,9 +12,12 @@ add_library(byteturn
   src/executor.cpp
   src/openai_compatible.cpp
   src/session.cpp
+  src/observability.cpp
+  src/curl_transport.cpp
 )
 find_package(Threads REQUIRED)
-target_link_libraries(byteturn PUBLIC Threads::Threads)
+find_package(CURL REQUIRED)
+target_link_libraries(byteturn PUBLIC Threads::Threads CURL::libcurl)
 target_include_directories(byteturn PUBLIC include)
 target_compile_options(byteturn PRIVATE -Wall -Wextra -Wpedantic)
 

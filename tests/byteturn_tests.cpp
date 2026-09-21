@@ -1,12 +1,16 @@
 #include "byteturn/agent.h"
 #include "byteturn/executor.h"
+#include "byteturn/session.h"
 #include "byteturn/openai_compatible.h"
+#include "byteturn/observability.h"
+#include "byteturn/curl_transport.h"
 
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <mutex>
+#include <sstream>
 #include <thread>
 
 namespace {
@@ -29,6 +33,18 @@ class FakeHttp final : public HttpTransport {
   }
   HttpRequest last_request;
   HttpResponse response;
+};
+
+class CancellableLlm final : public LlmProvider {
+ public:
+  LlmTurn complete(const std::vector<Message>&) override { return {}; }
+  LlmTurn complete(const std::vector<Message>&,
+                   const std::function<bool()>& cancelled) override {
+    started.set_value();
+    while (!cancelled()) std::this_thread::yield();
+    throw std::runtime_error("network cancelled");
+  }
+  std::promise<void> started;
 };
 
 void require(bool condition, const char* message) {
@@ -96,7 +112,8 @@ void test_session_executor() {
 void test_openai_compatible_adapter() {
   FakeHttp http;
   http.response = {200,
-      R"({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Sydney\"}"}}]}}]})"};
+      R"({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Sydney\"}"}}]}}]})",
+      {}, 0.0, 0.0, 0.0, 0.0, 0.0};
   OpenAiCompatibleConfig config;
   config.base_url = "https://example.test/v1/";
   config.api_key = "secret";
@@ -117,9 +134,65 @@ void test_openai_compatible_adapter() {
           "tool arguments decoded");
 }
 
+void test_observability() {
+  EventBus events;
+  MetricsRegistry metrics;
+  RuntimeObserver observer(events, metrics);
+  std::ostringstream logs;
+  JsonEventLogger logger(events, logs);
+  const auto start = std::chrono::steady_clock::now();
+  events.publish({EventType::TurnStarted, "s", "t", 0, start, {}, "secret"});
+  events.publish({EventType::TurnCompleted, "s", "t", 0,
+                  start + std::chrono::milliseconds(12), {}, "private reply"});
+  require(metrics.counter("byteturn_events_turn_started_total") == 1,
+          "event counter");
+  const auto histogram = metrics.histogram("byteturn_turn_duration_ms");
+  require(histogram.count == 1 && histogram.sum >= 12.0,
+          "turn latency histogram");
+  require(metrics.prometheus_text().find("byteturn_turn_duration_ms_count 1") !=
+              std::string::npos,
+          "Prometheus rendering");
+  require(logs.str().find("private reply") == std::string::npos,
+          "event payload redacted by default");
+  require(logs.str().find("\"session_id\":\"s\"") != std::string::npos,
+          "structured correlation fields");
+}
+
+void test_curl_policy() {
+  require(CurlHttpTransport::retryable_http_status(429), "429 is retryable");
+  require(CurlHttpTransport::retryable_http_status(503), "503 is retryable");
+  require(!CurlHttpTransport::retryable_http_status(400), "400 is not retryable");
+  require(CurlHttpTransport::parse_retry_after("3") ==
+              std::chrono::milliseconds(3000),
+          "Retry-After seconds");
+}
+
+void test_cancellation_reaches_provider() {
+  CancellableLlm llm;
+  ToolRegistry tools;
+  Agent agent(llm, tools);
+  SessionExecutor executor(1);
+  AsyncSession session("cancel-test", agent, executor);
+  auto started = llm.started.get_future();
+  auto turn = session.submit("hello");
+  started.wait();
+  session.cancel();
+  bool cancelled = false;
+  try {
+    (void)turn.result.get();
+  } catch (const std::runtime_error&) {
+    cancelled = true;
+  }
+  require(cancelled, "session cancellation reaches provider");
+  require(agent.history().size() == 1, "cancelled turn rolls back history");
+}
+
 int main() {
   test_agent_and_events();
   test_session_executor();
   test_openai_compatible_adapter();
+  test_observability();
+  test_curl_policy();
+  test_cancellation_reaches_provider();
   std::cout << "all tests passed\n";
 }

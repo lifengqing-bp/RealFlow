@@ -5,6 +5,7 @@
 #include "byteturn/tool.h"
 
 #include <cstddef>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -16,7 +17,8 @@ class Agent {
         EventBus* events = nullptr);
   std::string run(std::string user_text);
   std::string run(std::string user_text, std::string session_id,
-                  std::string turn_id);
+                  std::string turn_id,
+                  std::function<bool()> cancelled = {});
   const std::vector<Message>& history() const { return history_; }
 
  private:
