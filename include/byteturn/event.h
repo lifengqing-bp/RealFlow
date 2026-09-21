@@ -39,7 +39,11 @@ enum class EventType {
   TurnCompleted,
   TurnCancelled,
   RealtimeSessionClosed,
-  Error
+  Error,
+  // Generic session lifetime, distinct from a provider connection lifetime.
+  SessionStarted,
+  SessionStopped,
+  SessionFailed
 };
 
 struct Event {
@@ -62,6 +66,11 @@ struct Event {
   std::string name;
   std::string data;
   std::string trace_id;
+
+  // timestamp retains a supplied local/source time for legacy metrics.
+  // received_at and sequence are assigned by the admitting timeline, once.
+  std::chrono::steady_clock::time_point received_at{};
+  std::uint64_t generation = 0;  // 0 means unspecified at legacy ingress.
 };
 
 class EventBus {
@@ -73,7 +82,15 @@ class EventBus {
   void unsubscribe(Subscription subscription);
   void publish(Event event);
 
+  // True inside any EventBus subscriber on this thread, including nested
+  // publication. Blocking lifecycle waits must not run in these callbacks.
+  static bool in_callback() noexcept;
+
  private:
+  friend class EventTimeline;
+  // Only canonical timeline delivery may bypass legacy normalization.
+  std::size_t deliver(const Event& event);
+
   struct HandlerEntry {
     explicit HandlerEntry(Handler value) : handler(std::move(value)) {}
     Handler handler;
