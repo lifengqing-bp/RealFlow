@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(byteturn
+  src/runtime_manager.cpp
   src/agent.cpp
   src/conversation.cpp
   src/conversation_session.cpp
@@ -40,3 +41,13 @@ add_executable(runtime_foundation_tests tests/runtime_foundation_tests.cpp)
 target_link_libraries(runtime_foundation_tests PRIVATE byteturn)
 add_test(NAME runtime_foundation_tests COMMAND runtime_foundation_tests)
 set_tests_properties(byteturn_tests runtime_foundation_tests PROPERTIES TIMEOUT 120)
+
+add_executable(runtime_manager_tests tests/runtime_manager_tests.cpp)
+target_link_libraries(runtime_manager_tests PRIVATE byteturn)
+add_test(NAME runtime_manager_tests COMMAND runtime_manager_tests)
+set_tests_properties(runtime_manager_tests PROPERTIES TIMEOUT 120)
+
+add_executable(runtime_manager_demo apps/runtime_manager_demo.cpp)
+target_link_libraries(runtime_manager_demo PRIVATE byteturn)
+add_test(NAME runtime_manager_demo COMMAND runtime_manager_demo)
+set_tests_properties(runtime_manager_demo PROPERTIES TIMEOUT 30)
