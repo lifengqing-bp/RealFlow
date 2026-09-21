@@ -3,456 +3,321 @@
 **RealFlow — Realtime Human-Agent Interaction Runtime**
 
 Human interaction is a continuous realtime stream. Agent reasoning and tool
-execution are asynchronous work. RealFlow connects the two without requiring
-an entire session to follow a sequential listen → think → speak loop.
+execution are asynchronous work. RealFlow connects them without making an entire
+session follow a sequential listen → think → speak loop.
 
-This document defines the architectural direction and the migration contract.
-The implementation snapshot below is based on `e312d8c` (PR #1). **Current**
-means code exists, not that every production requirement has been verified.
-**Target** and **planned** sections describe work that is not yet implemented.
-Delivery order and acceptance gates are in [the roadmap](roadmap.md).
+The implementation baseline is `ee95f2f` (merged PR #3, M2.1). **Current** means
+source exists, not production readiness. **Target** describes contracts still to
+implement. See [roadmap.md](roadmap.md) for delivery gates and
+[runtime-foundation.md](runtime-foundation.md) for the current API and its limits.
 
-## 1. Scope and architectural decisions
-
-RealFlow owns interaction lifetime, stream coordination, interruption policy,
-output arbitration, and the boundary between conversation and agent execution.
-It should accept both an ASR–LLM–TTS pipeline and a native speech-to-speech
-backend without exposing vendor-specific session semantics to applications.
+## 1. Architectural decisions
 
 | Decision | Consequence |
 |---|---|
-| A session owns interaction lifetime. | A turn must not gate microphone input, playback, or unrelated work. |
-| A logical turn is a derived view. | Retain turn IDs for compatibility and analysis, not as the universal execution container. |
-| Conversation and agent execution are independent. | Reasoning or tools may continue while the user and assistant interact. |
-| Capabilities select behavior. | No provider-name conditionals in the session or conversation policy. |
-| Commands and observations are different. | A recorded event must not accidentally invoke a tool or trigger itself again. |
-| Media, control, and agent work have separate execution paths. | Network calls, synthesis, and telemetry must not block an audio callback. |
-| Cancellation is scoped. | Stopping speech is not automatically permission to cancel or repeat an external action. |
-| Observability uses explicit endpoints. | Generated audio, accepted output, and audible playback are different events. |
+| The application binary owns a Runtime Manager. | A session cannot own the process, shared executor, or the runtime that supervises it. |
+| A session owns one interaction lifetime. | Turns remain compatibility/analytical views, not gates on microphone input or unrelated work. |
+| Conversation and agent execution are independent. | Tools can run while human interaction continues. |
+| Registry state is authoritative for membership. | Cleanup never depends on a best-effort terminal notification reaching a subscriber. |
+| Commands and observations are different. | Replaying an observation must not execute a tool or cancel a new session. |
+| Media, control, task, and notification paths are separate. | Slow inference or observers must not run on the capture callback. |
+| Cancellation is scoped. | Stopping speech neither undoes nor necessarily cancels an external action. |
+| Capabilities select behavior. | Provider names must not determine core session policy. |
+| Measurements have explicit endpoints. | Generated, queued, audible, and stopped audio are different facts. |
 
-The core remains portable C++17. Vendor SDKs and wire protocols belong in
-adapters. RealFlow is not intended to replace a general planning framework,
-workflow DSL, vector database, or model-training stack. Existing agent systems
-should be attachable through a small asynchronous boundary.
+The core remains portable C++17. Vendor SDKs and protocols belong in adapters.
+RealFlow is not a general planning framework, workflow DSL, database, or model
+training system. Integrate those systems through a small asynchronous boundary.
 
-## 2. Current implementation and migration gaps
+## 2. Current implementation
 
-Source paths still use `byteturn`. The CMake project is named `RealFlow`, but
-namespace, include paths, library/executable names, and metric prefixes have
-not completed the rename. Examples must use the symbols that actually exist;
-`namespace realflow` is a migration target, not today's API.
+Names still use `byteturn` for compatibility; only the CMake project is RealFlow.
+Do not present `namespace realflow` or unimplemented provider adapters as APIs.
 
-| Component | Current responsibility | Remaining boundary work |
+| Component | Current responsibility | Remaining work |
 |---|---|---|
-| [`ConversationSession`](../include/byteturn/conversation_session.h) | Owns an engine and an in-memory timeline; forwards audio and events. | Lifecycle race handling, failure cleanup, event validation, and explicit session events. |
-| [`EventTimeline`](../src/event_timeline.cpp) | Appends event copies to a vector and returns copy snapshots. | Canonical sequence/timestamp assignment, bounded retention, ordered delivery, and persistence contracts. |
-| [`ConversationEngine`](../include/byteturn/conversation_engine.h) | Defines start/input/event/stop, capabilities, and an orthogonal state snapshot. | Precise threading and command contracts; capability negotiation and semantic event normalization. |
-| [`PipelineConversationEngine`](../src/pipeline_conversation_engine.cpp) | Wraps `Conversation` and forwards its private bridge-bus events. | Complete agent/model/tool event capture, external controls, and authoritative state projection. |
-| [`Conversation`](../src/conversation.cpp) | Runs bounded ASR input, asynchronous agent submission, sentence segmentation, and incremental TTS. | Remove implicit interruption on arbitrary input frames and the internal exclusive state assumption. |
-| [`FullDuplexConversation`](../src/full_duplex_conversation.cpp) | Keeps native input active during output; tracks response/sample offsets and playback acknowledgements. | Adapt to `ConversationEngine`; separate provider completion from playback completion. |
-| [`AsyncSession`](../include/byteturn/session.h) / [`SessionExecutor`](../include/byteturn/executor.h) | Serialize mutable agent history per session; provide bounded pending work and cancellation. | Retain as a pipeline implementation detail, not as the lifetime of all interaction. |
-| [`Agent`](../include/byteturn/agent.h) / [`ToolRegistry`](../include/byteturn/tool.h) | Concrete bounded LLM/tool loop, history, and named tool dispatch. | General asynchronous agent/delegation contracts and tool authorization. |
-| [`RuntimeObserver`](../include/byteturn/observability.h) / [`CurlHttpTransport`](../include/byteturn/curl_transport.h) | Metrics, structured logging, and HTTP transport mechanics. | Unified event coverage, physical playback-stop metrics, and load/failure validation. |
+| [`ConversationSession`](../include/byteturn/conversation_session.h) | Explicit lifecycle, operation leases, startup cleanup, cooperative shutdown, weak event sinks. | Supervision above sessions; typed authoritative commands; runtime failure reporting. |
+| [`EventTimeline`](../include/byteturn/event_timeline.h) | Canonical per-session metadata, bounded retention and asynchronous observation delivery. | Durable recording, schema evolution, authoritative reducer integration. |
+| [`ConversationEngine`](../include/byteturn/conversation_engine.h) | Engine lifecycle, input, capability and orthogonal state contracts. | Complete command and capability negotiation. |
+| [`PipelineConversationEngine`](../src/pipeline_conversation_engine.cpp) | Wraps the existing cascade and its conversation event bridge. | Complete model/tool events, explicit interruption controls, authoritative state. |
+| [`Conversation`](../src/conversation.cpp) | Bounded ASR worker, agent submission, sentence segmentation and incremental TTS. | Remove arbitrary-frame interruption and exclusive internal state assumptions. |
+| [`FullDuplexConversation`](../src/full_duplex_conversation.cpp) | Native concurrent I/O, response/sample offsets, playback-aware cancellation. | Unified engine adapter; generation versus playback completion. |
+| [`AsyncSession`](../include/byteturn/session.h) / [`SessionExecutor`](../include/byteturn/executor.h) | Bounded FIFO work and mutable history serialization. | Remain a pipeline detail, not global interaction lifetime. |
+| [`Agent`](../include/byteturn/agent.h) / [`ToolRegistry`](../include/byteturn/tool.h) | Concrete LLM/tool loop and named dispatch. | General agents, delegation, authorization and context versions. |
+| [`RuntimeObserver`](../include/byteturn/observability.h) | Stage metrics and payload-redacted logging. | Unified event coverage and physical playback-stop measurements. |
 
-### Important limits of the first refactor
+M2.1 fixed storage/publication metadata disagreement and added lifecycle tests.
+Timeline notifications remain best effort; direct publication to its legacy bus
+bypasses the journal. `handle_event()` is a compatibility hook, not a serialized
+command queue. Pipeline model/tool events are not automatically connected by
+constructing the wrapper. A fake overlap test proves representation, not actual
+full-duplex policy or production readiness. Per-session lifecycle and notification
+threads remain; high-concurrency efficiency has not been established.
 
-The current timeline stores an event **before** `EventBus::publish` assigns its
-sequence and possibly its timestamp. Stored and delivered metadata can differ.
-Concurrent appenders can also be published in a different order from vector
-insertion. The vector is unbounded, and publishing directly to the exposed bus
-bypasses the timeline. It is therefore an inspection scaffold, **not yet a
-canonical event journal or a durable source of truth**.
-
-The pipeline adapter's bridge sees events emitted by `Conversation`. The
-externally constructed `Agent` and `AsyncSession` are not automatically wired
-into that bridge. Model/tool events and the `reasoning` snapshot can therefore
-be incomplete. Its `handle_event` is currently a no-op.
-
-`ConversationSession` checks its flags before calling the engine, but does not
-protect an admitted call from racing `stop()`. `start()` calls external engine
-code while holding the lifecycle mutex. Failure recovery and teardown require
-further work. Until that work lands, callers must serialize lifecycle and input
-calls, avoid lifecycle re-entry from callbacks, and keep borrowed dependencies
-alive through shutdown. This is not a claim of general thread safety.
-
-The overlap test uses a test engine. It proves that the new session abstraction
-can represent simultaneous user/agent activity; it does not establish full-duplex
-behavior or cancellation correctness for the real pipeline adapter.
-
-## 3. Target runtime layout
-
-The following is the **target**, not the current directory structure:
+## 3. Ownership and execution layout (target)
 
 ```text
-Application / capture / player / RTC transport
-                     |
-          +----------v-----------------------------------------+
-          | Interaction Runtime                               |
-          | ConversationSession                               |
-          |   canonical event ingress -> timeline -> state    |
-          |   ConversationController / output arbitration     |
-          |   ConversationEngine                              |
-          |      + PipelineConversationEngine                 |
-          |      + NativeDuplexConversationEngine (planned)    |
-          +------------------------+--------------------------+
-                                   | delegation / progress / results
-          +------------------------v--------------------------+
-          | Agent Runtime (planned)                           |
-          | Custom agent / local LLM loop / remote agent       |
-          | Tasks / context snapshots / cancellation / budget |
-          +------------------------+--------------------------+
-                                   |
-          +------------------------v--------------------------+
-          | Tool Runtime (planned)                            |
-          | Native / HTTP / MCP adapters / application tools   |
-          | Validation / authorization / approval / audit      |
-          +---------------------------------------------------+
-
-Providers attach where used: ASR/TTS/S2S to engines, LLMs to agents,
-and external APIs to tools. They are not a mandatory serial layer.
-
-Cross-cutting: scheduling, bounded queues, transport, metrics,
-tracing, privacy, recording, replay, and evaluation.
+Application binary / service host
+  ├── signal integration, readiness, process exit policy
+  ├── binary-owned shared transports / provider clients / executors
+  └── RuntimeManager
+        ├── SessionRegistry: reservations, identities, ownership, limits
+        ├── SessionSupervisor: authoritative outcomes, stop/reap policy
+        ├── bounded startup work and runtime notification queues
+        └── managed session resources
+              ├── dependency lifetime bundle
+              └── ConversationSession
+                    ├── EventTimeline / control reducer
+                    ├── ConversationController / output arbitration
+                    └── ConversationEngine
+                          ├── PipelineConversationEngine
+                          └── NativeDuplexConversationEngine (planned)
+                                   │ delegation / results
+                              Agent Runtime (planned)
+                                   │ authorized calls
+                              Tool Runtime (planned)
 ```
 
-### Execution paths
+Registry and supervisor are roles, initially implemented inside one
+`RuntimeManager`; they do not each require a new service or thread. Providers
+attach where used: ASR/TTS/S2S at engines, LLMs at agents, external APIs at tools.
 
-The **media path** moves timestamped audio through bounded queues and the
-player. Audio ownership, format, channel count, and sample offsets are explicit.
-The timeline holds metadata or optional recording references, not an unlimited
-copy of every PCM buffer.
+The media path carries bounded, owned audio buffers. The control path orders
+commands and reduces interaction state without awaiting task I/O. The agent path
+runs asynchronous work. Notification paths expose facts without owning those
+operations. A serialized control lane does not serialize the lifetime of tasks.
 
-The **control path** orders admitted session observations and commands. A
-per-session serialized reducer owns interaction state. It must not wait for
-LLM inference, tool I/O, TTS completion, or slow observers. A serialized control
-lane does not serialize the duration of all session work.
+## 4. Runtime Manager and Session Supervisor (target)
 
-The **agent path** runs independently. Its progress and results return as
-correlated observations. Mutable history may still require serialization within
-one agent, while unrelated tasks or agents can execute concurrently.
+### Binary lifecycle ownership
 
-## 4. Session and engine contract
+The executable owns the Runtime Manager and outlives every callback it installs.
+The manager owns session resources until teardown is complete; transports retain
+opaque handles, not owning session pointers. A handle includes runtime-instance
+identity, session ID, and a monotonically increasing incarnation. Reusing a human
+session ID must never make a late remove/failure/audio callback target its successor.
+Handles are process-local; distributed resume requires a separate epoch protocol.
 
-### Existing interface
+Session-specific providers, agents and executors may be held in a dependency
+bundle. Destroy the session/engine and drain its callbacks **before** releasing
+that bundle. Binary-owned borrowed dependencies must outlive manager shutdown.
+Factories must return these lifetime dependencies rather than leaving borrowed
+objects on their stack. Never destroy arbitrary factory captures under a registry
+lock. No owning session pointer escapes admission or lookup APIs.
 
-The public engine interface currently has this shape; the included types are
-defined in [`conversation_engine.h`](../include/byteturn/conversation_engine.h):
+The first implementation may use a fixed startup worker pool, one supervisory
+scan lane and one runtime notification dispatcher. This does not replace M2.1's
+per-session threads. Declare all thread/queue counts and benchmark before claiming
+large-scale capacity. No detached cleanup work is allowed.
 
-```cpp
-class ConversationEngine {
- public:
-  virtual ~ConversationEngine() = default;
-  virtual void start(ConversationEngineContext context) = 0;
-  virtual bool push_audio(AudioFrame frame) = 0;
-  virtual void handle_event(const Event& event) = 0;
-  virtual void stop() = 0;
-  virtual ConversationCapabilities capabilities() const = 0;
-  virtual ConversationStateSnapshot state() const = 0;
-};
-```
+### Registry and admission
 
-### Required lifecycle semantics (target)
-
-Use an explicit lifecycle: `Created → Starting → Running → Stopping → Stopped`,
-with a failure path that still performs cleanup. Shutdown is idempotent; a
-stopped session cannot silently restart. Startup failure releases subscriptions,
-workers, provider handles, and partial state before reporting failure.
-
-An input operation must either be admitted under a live session generation or
-be rejected. Shutdown closes admission before cancelling and draining admitted
-operations. It must not race destruction of resources used by an accepted call.
-Do not hold a session mutex while invoking engine/provider/application code or
-waiting for callbacks. Reentrant stop requests must be deferred to the control
-lane rather than joining the calling worker.
-
-The session owns the engine and timeline. Providers and legacy `AsyncSession`
-are currently borrowed dependencies; their lifetime must cover all workers and
-callbacks. `stop()` must quiesce work that can access session-owned memory.
-External services may ignore cancellation, so use transport deadlines and
-late-result fencing rather than detached threads with borrowed references.
-
-### Capabilities and control ownership (target)
-
-Distinguish three questions: can audio be sent and received concurrently, can
-the backend interpret overlapping speech, and who controls interruption/EOU?
-A bidirectional connection alone is not evidence of conversational full duplex.
-
-The current capability struct contains booleans for native duplex,
-simultaneous listen/speak, interruption, EOU, backchannel, and transcripts.
-Extend it with negotiated audio formats, playback acknowledgement support,
-delegation support, and policy ownership only as implementations require them.
-Capability declaration and configured policy are not the same thing.
-
-For each policy choose one owner: provider, runtime, or application. A provider
-that owns turn-taking must not also receive duplicate runtime-generated commit
-or cancellation commands. Unsupported required capabilities must fail setup or
-select an explicit degraded mode; they must not be silently advertised.
-
-## 5. Events, timeline, and interaction state
-
-### Canonical admission (target)
+Use one authoritative membership map, protected by a short critical section.
+Entries retain identity, phase, terminal reason, admitted-operation count,
+resource ownership, and completion tickets. Public snapshots contain metadata,
+not mutable session internals.
 
 ```text
-provider / media / task observation
-                 |
-       validate session + generation
-                 |
-       normalize semantic event
-                 |
-       assign sequence and receive time once
-                 |
-       append journal + reduce state
-                 |
-       ordered, bounded observer delivery
+Absent -> Reserved -> Starting -> Running -> StopRequested -> Retiring -> Absent
+                 \ startup failure/cancel -> StopRequested -----------/
 ```
 
-Each session has its own increasing sequence. Sequence defines local admission
-order, not global physical causality. Preserve source timestamps separately;
-remote clocks need an explicit mapping before cross-device durations can be
-computed. Recorded metadata and subscriber metadata must be identical.
+`max_sessions` covers **all reserved entries**, including starting, failed-but-not-
+reaped, stopping and retiring sessions. Bound pending starts and session ID size
+separately. Limits are hard admission bounds, not promises about provider cost.
+Per-tenant/provider quotas and byte-accurate accounting follow later.
 
-The target envelope includes schema version, session/event identity, local
-sequence and receive timestamp, optional source time, origin, trace/cause IDs,
-and optional participant, response, task, delegation, and legacy turn IDs.
-A native response ID must not be treated as a user turn ID. Typed payloads and
-versioned adapter metadata replace inference from arbitrary `name` strings.
+`add(id, factory)` first validates, reserves capacity and an incarnation atomically,
+then schedules construction/start outside the registry lock. Reject duplicate IDs,
+full capacity, full startup queue and a draining runtime explicitly. Rejection must
+not invoke the factory. Acceptance is not startup success: return separate startup
+and retirement completion tickets. A failed start releases resources and resolves
+both outcomes; failure does not leak capacity.
 
-Commands such as `CancelOutput`, `CancelTask`, and `CommitInput` are requested
-actions. Observations such as `OutputStopped`, `TaskCancelled`, and
-`InputCommitted` report outcomes. Record acceptance and outcome separately;
-replaying an observation must not execute a live external side effect.
+`remove(handle)` is idempotent and non-waiting: close that entry's input admission,
+record the first applicable reason and request cooperative stop. It is not an
+immediate map erase. Removal while reserved may skip the factory; removal during
+construction/start must fence the result and clean up anything already created.
+Do not release the slot until admitted calls, engine stop, notification callbacks,
+and dependency teardown are quiescent. Only then resolve retirement and allow ID
+reuse. A retirement ticket remains valid after the map entry disappears.
 
-| Semantic family (target) | Existing events to map during migration |
+Lookup/input use an internal operation lease. A call admitted before removal can
+finish; calls admitted after the removal linearization point are rejected. Do not
+hold the registry lock while calling engines, factories, observers or destructors.
+A capacity limit therefore cannot be bypassed by retaining public `shared_ptr`s.
+
+### Notify queues are not control queues
+
+| Path | Authority and overload contract |
 |---|---|
-| Session lifecycle | `RealtimeSessionStarted`, `RealtimeSessionClosed`; generic session events are still needed. |
-| User speech and transcript | `InputSpeechStarted`, `InputSpeechEnded`, `TranscriptPartial`, `TranscriptFinal`. |
-| Response/content generation | `TurnStarted`, `ModelTextDelta`, `ModelCompleted`; pipeline-specific events remain diagnostics. |
-| Output generation and playback | `SpeechStarted`, `AudioOutput`, `SpeechCompleted`, `PlaybackStarted`, `PlaybackProgress`. |
-| Interruption and output cancellation | `BargeInDetected`, `OutputCancelled`, `TurnCancelled`; cancellation scope needs normalization. |
-| Delegation/task/progress/artifact | Planned; not supplied by the current event vocabulary. |
-| Overlap/backchannel/policy decision | Planned; derive from explicit inputs and policy decisions, not every audio frame. |
+| Registry mutation / remove / failure report | Direct validated state transition; never relies on observer delivery or a free startup queue slot. |
+| Startup queue | Bounded; reject a new add before acceptance when full. |
+| Per-session control queue (future) | Explicit command acceptance and outcome; never silently drop accepted cancel commands. |
+| Runtime notify queue | Bounded, asynchronous, best effort; drop newest on overflow and expose sequence gaps/counters. |
+| Session timeline notify queue | Existing M2.1 bounded observations; independent of runtime membership. |
 
-`TranscriptPartial` is not automatically an append-only delta; an ASR adapter
-must declare whether it emits replacement hypotheses or incremental text.
-Similarly, legacy `SpeechStarted` marks generation/synthesis activity, not proof
-that audio became audible. Do not rename events without preserving that meaning.
+Runtime notifications contain identity, transition, reason, and sequence, not
+transcripts, credentials or tool arguments. Invoke observers outside registry
+locks; isolate observer exceptions. Slow observers may lose notifications, but
+cannot prevent stop requests, startup failure accounting or authoritative terminal
+reconciliation. Use registry snapshots for current membership and completion
+tickets for definitive outcomes. A notification flush means enqueued callbacks
+finished, not that nothing was dropped. Do not retain an unbounded terminal history.
 
-### Orthogonal state
+### Abnormal exit supervision
 
-The existing snapshot permits `user_speaking && agent_speaking`. The target
-reducer tracks participant activity, active response IDs, playback state, and a
-set of running tasks independently. UI booleans are projections of those sets,
-not the authoritative representation of multiple tasks.
+A notification consumer is not a supervisor. The supervisor reconciles authoritative
+session lifecycle/failure state and explicit fatal reports, even when notify queues
+are saturated. It initiates cooperative stop, records a structured outcome and
+reaps resources. A session failure must not automatically stop unrelated sessions.
 
-Generation, audible playback, reasoning, and floor ownership are independent.
-A user backchannel need not cancel speech; an overlap is an observation, not a
-policy decision. `LogicalTurn` becomes an optional analytical projection over
-these events, without owning execution or forcing one response per utterance.
-
-### Bounds, subscribers, and privacy
-
-Use bounded in-memory retention with explicit eviction and gap metadata.
-Snapshots must remain safe copies or immutable views with owned lifetime, not
-unprotected spans over a mutating vector. Durable recording is a separate,
-opt-in sink with its own retention and failure policy.
-
-Do not run slow loggers on the media/control path. Isolate observer exceptions,
-bound notification queues, and expose dropped-observation counters. A full
-control queue must reject/degrade explicitly rather than silently lose a cancel
-command. Unsubscription and recursive callback behavior need regression tests.
-
-Payload-free logging does not make the current timeline payload-free: it stores
-`Event::data` copies. Minimize transcript/tool content, configure retention,
-restrict access, and keep credentials out of all event envelopes. Audio and
-sensitive payload recording require explicit opt-in and deletion controls.
-
-## 6. Engine paths and interruption
-
-### Pipeline migration
-
-```text
-input audio -> bounded ASR worker -> final transcript
-           -> AsyncSession / legacy Agent / SessionExecutor
-           -> streaming text -> sentence segmenter
-           -> bounded incremental TTS worker -> output sink -> player
-```
-
-Keep existing streaming, deadline, history rollback, and overload behavior
-covered while moving ownership. `SessionExecutor` can continue serializing one
-agent's mutable history; it must not stop microphone ingestion or control events.
-
-Route model/tool and conversation events through one canonical ingress without
-publishing them twice. Remove the current `push_audio()` rule that interrupts on
-any frame while speaking. Require an explicit speech/policy signal instead.
-A provider without overlapping-speech support must expose that limitation even
-when RealFlow can continue buffering or forwarding input.
-
-### Native duplex adapter (planned)
-
-Wrap `FullDuplexConversation` as `NativeDuplexConversationEngine` and reuse its
-continuous input, response IDs, cancellation, and playback acknowledgements.
-Do not invent internal ASR, text-LLM, or TTS stages for a native S2S provider.
-Phase metrics that the provider does not expose are unavailable, not zero.
-
-Keep three states distinct: provider generation complete, output queued, and
-playback complete. A response can finish generating while its audio is still
-playing and remains interruptible. Audio offsets must have a documented unit
-(prefer sample frames per channel), sample rate, channel count, and response ID.
-Reject late audio for a cancelled generation even after reconnection.
-
-No named model is supported merely because this abstraction exists. Each vendor
-adapter requires its own protocol implementation, capability declaration, and
-conformance tests against the API version it uses.
-
-### Interruption protocol (target)
-
-On confirmed interruption, the controller invalidates the output generation,
-requests player flush/mute, and sends provider cancellation/truncation using the
-last acknowledged audible position. Stale callbacks and audio are fenced by
-session/response generation. Device acknowledgement determines when output
-actually stopped; sending cancellation is not proof of silence.
-
-Separately decide whether agent work is cancelled, superseded, or allowed to
-continue. Results from obsolete context may be retained for audit but must not
-speak or modify the new conversational context without reconciliation. An
-already committed external action needs status handling or compensation, not
-fictional rollback. Local history rollback does not undo a tool side effect.
-
-## 7. Custom agents, delegation, tools, and context (planned)
-
-These are design boundaries, not implemented public classes. Today's `Agent`
-is the concrete LLM/tool loop, not yet an arbitrary-agent interface.
-
-A custom-agent invocation takes structured content, task/delegation identity,
-an immutable context snapshot and version, deadline, cancellation token,
-resource budget, and authorized tool scope. It returns a task handle and emits
-an asynchronous stream: accepted, progress, content delta, tool activity,
-artifact/result, and exactly one terminal outcome.
-
-The runtime should support a deterministic local agent, the existing LLM loop,
-and a remote agent through the same boundary. Framework integrations are
-adapters; the core does not import their graph or vendor SDK types. Transport
-retries need event IDs/deduplication, not a claim of exactly-once network delivery.
-Do not require access to private model reasoning. Only provider-exposed metadata
-and explicitly public progress belong in user-facing events or logs.
-
-```text
-ConversationController -> Delegation -> AgentTask
-       |                                  + ModelTask
-       |                                  + ToolTask
-       + acknowledgement/progress         + optional child tasks
-       <---------------- correlated result / failure / cancellation
-```
-
-Delegation policy controls whether to remain silent, acknowledge once, or expose
-meaningful progress. The conversation controller arbitrates speech. Agents do
-not write directly to a shared speaker. Acknowledgement can shorten silence,
-but does not shorten task completion or justify repetitive filler.
-
-Cancellation, deadline, priority, and budget propagate through the task tree.
-Child deadlines cannot exceed their parent's. Cancellation request and terminal
-cancellation are distinct; a non-cooperative service's result must still be
-fenced. Admission control and accounting enforce budgets rather than relying
-only on prompt instructions.
-
-Tool execution separates schema validation, authorization, user approval where
-needed, execution, and audit. Treat tool descriptions/results as untrusted data.
-MCP is an optional adapter, not the authority model or a core dependency. Retry
-only under an explicit idempotency policy; reserve identifiers for deduplication
-of externally visible actions. Arbitrary native plugin code is not sandboxed by
-an interface and should run out of process when untrusted.
-
-`ContextBuilder` derives a task-specific view from committed interaction events,
-relevant tool results, application state, and permitted memory. Keep session
-state, agent history, task-local data, and durable memory separate. An agent
-receives a snapshot, not unrestricted mutable ownership of the timeline.
-Cancelled/unheard output must be distinguishable from what the user heard.
-Memory persistence is opt-in and requires provenance, retention, and deletion.
-
-## 8. Observability, transport, and replay
-
-### Metrics contract
-
-Preserve existing `byteturn_*` metrics during an explicit naming migration.
-Use the legacy provider and stage events for their existing diagnostics; unify
-their coverage before treating session-wide dashboards as complete.
-
-| Measurement | Required endpoints |
+| Failure | Required response |
 |---|---|
-| Provider first packet / total | Request start → first response byte / request completion; retain DNS/connect/TLS breakdowns where available. |
-| ASR final latency | Declared input EOU boundary → final transcript. |
-| LLM TTFT / total | Model request start → first text token / request completion. |
-| TTS first audio / total | Synthesis start → first generated frame / synthesis completion. |
-| S2S first audio | Declared user speech-end boundary → first generated response audio. |
-| First audible response | Same speech-end boundary → player acknowledgement of audible output. |
-| Cancellation dispatch | Interruption decision → cancellation request accepted/dispatched. |
-| Physical interruption stop | Interruption decision → player-confirmed flush/silence boundary. |
-| Delegation duration | Accepted delegation → terminal outcome, labelled by outcome. |
-| Time to useful answer | User endpoint → first audible substantive result; distinguish acknowledgement. |
-| Overlap / backchannel | Explicit participant/playback intervals and declared policy labels. |
+| Factory/startup exception or invalid engine | Fail admission startup; clean partial resources; retire the reservation. |
+| Exception from an admitted engine operation | Fail/fence that session and request stop; do not unwind into the media caller. |
+| Explicit fatal provider/worker report | Record failure through the control path and stop the matching incarnation. |
+| Session ends without a manager removal | Reconcile its authoritative terminal state and retire it. |
+| Recoverable provider error observation | Keep it observable; do not classify every `EventType::Error` as session-fatal. |
+| Stuck startup/stop/observer | Keep capacity charged and report incomplete shutdown; never free live resources. |
+| Process crash, memory corruption, forced kill | External process supervision; no safe in-process recovery promise. |
 
-Some stage/playback-start metrics exist; the complete normalized metric set is
-a target. In particular, the current `OutputCancelled` event does not prove
-physical playback stopped. Publish unknown endpoints as unavailable. Do not add
-pipeline component latencies to claim an end-to-end result when stages overlap.
+The initial policy is **stop and retire**, not automatic restart. Later restart
+budgets/backoff require a new incarnation, fresh resources, explicit context
+reconciliation and no automatic replay of side effects. A timeout is a decision
+boundary, not evidence that a C++ thread or remote operation has terminated.
+Native workers must catch/report their own exceptions; an uncaught thread exception
+is outside the manager's recoverable boundary. Watchdogs and process-isolated
+providers are later work, not implied by a registry scan.
 
-Report p50/p95/p99 with hardware, concurrency, network conditions, audio format,
-provider configuration, queue bounds, and cancelled/failed sample counts. Cost,
-CPU, memory, queue occupancy, event loss, and correctness accompany latency.
-Session/task IDs belong in traces, not unbounded metric labels.
+### Runtime shutdown
 
-A proposed delegation-hidden ratio may be explored as a diagnostic, but is not
-a release KPI. Measure acknowledgement latency, meaningful-answer latency, and
-task success separately so filler speech cannot improve the score artificially.
+`Running -> Draining -> Stopped`: close global add/input admission, request stop
+for all reservations, finish or cancel startup, drain admitted work, reap sessions,
+then finish runtime notifications and join manager workers. The host releases shared
+services last. Startup racing shutdown must never escape as a new Running session.
+`request_shutdown()` is the callback-safe request; blocking shutdown belongs on
+an owning thread. A bounded wait may time out while resources stay owned; the
+RAII destructor still joins cooperatively. Callback destruction of the manager or
+session is forbidden. Destruction is not a forced-cancellation mechanism.
 
-### Network boundary
+Signal handling belongs in the executable: translate OS signals onto a normal
+thread before calling C++ APIs. Do not allocate, lock or join inside an async signal
+handler. A deployment supervisor owns any final process termination deadline.
+The library neither exits the process nor installs global signal handlers.
 
-Preserve `CurlHttpTransport` ownership of TLS verification, deadlines,
-cancellation, response limits, `Retry-After`, and DNS/connect/TLS/first-byte/total
-request timings. Protocol serialization stays in adapters. Existing streaming retry policy must continue to avoid restarting a
-response after body delivery, which could duplicate already-consumed text/audio.
-Even a request retried before body delivery may duplicate backend work or cost.
-Tool-side retries require a stronger idempotency contract than inference retries.
+## 5. Session, engine and event contracts
 
-WebSocket/WebRTC/RTC transports are integration work, not implied by the HTTP/SSE
-implementation. Reconnection and engine fallback require explicit context,
-capability, pending-output, and task reconciliation. Switching providers is not
-a transparent continuation of identical native model state.
+The current engine API is in
+[`conversation_engine.h`](../include/byteturn/conversation_engine.h).
+`start/stop` run on a lifecycle lane; input/state calls hold admission leases.
+Engine methods must be bounded/thread-safe; stop must quiesce providers even after
+partial startup. Session stop requests are callback-safe, but owner destruction is
+not. Session lifetime remains non-restartable.
 
-### Replay and evaluation (target)
+The target canonical ingress validates session/incarnation, assigns local sequence
+and receive time once, records the event, reduces state, then offers a notification.
+M2.1 implements canonical journal admission and bounded delivery, not the complete
+reducer. Local sequence is not global physical causality; remote source timestamps
+need an explicit clock mapping. Durable recording is separate and opt-in.
 
-Introduce fake engines, fake clocks, scripted providers, and recorded adapter
-outcomes early. Deterministic replay applies to the control reducer and recorded
-inputs, not to rerunning arbitrary live models or external tools. Replay must
-disable real side effects. Policy versions, event schemas, clock mappings, and
-recording gaps belong in the replay manifest.
+Commands (`CancelOutput`, `CancelTask`, `CommitInput`) request actions; observations
+report acceptance/outcomes. Use typed payloads, schema versions and distinct response,
+task/delegation and legacy-turn IDs as adapters migrate. Do not equate a native
+response ID with an input utterance. Generic `SessionStarted/Stopped/Failed` already
+exist; provider connection events remain separate diagnostics.
 
-Persisted sessions can later become regression fixtures for interruption,
-late-results, overload, reconnects, and utterance policies. Collection requires
-a privacy/consent policy; a metrics log alone is not a complete replay record.
+Orthogonal state tracks participant, generation, audible playback and task activity.
+A user backchannel/overlap is not automatically an interruption. Booleans such as
+`user_speaking && agent_speaking` are projections, not a complete multi-task state
+model. `LogicalTurn` is a derived view. ASR partials may replace earlier hypotheses;
+legacy `SpeechStarted` means synthesis/generation, not necessarily audible speech.
+
+Retain safe copy/owned snapshots and bounded event/notification sizes. Default log
+redaction does not remove payloads from the timeline: `Event::data` can contain
+sensitive content. Scope access, minimize retention, and require consent/retention/
+deletion policies for persistent media or content recording.
+
+## 6. Engines, capabilities and interruption (target)
+
+Complete pipeline conversation/model/tool event wiring without duplicate publication.
+Keep existing streaming ASR → agent/LLM → sentence segmentation → incremental TTS.
+Replace cancellation on arbitrary input frames with explicit speech/policy controls.
+History serialization stays internal; it cannot gate continuous microphone input.
+
+Wrap native realtime I/O behind `NativeDuplexConversationEngine`. Do not invent
+internal ASR/LLM/TTS stages for a native S2S provider. Capabilities distinguish
+concurrent transport I/O, interpretation of overlapping speech, and policy ownership.
+Choose exactly one owner for EOU/interruption: provider, runtime or application.
+Reject unsupported requirements or select an explicit degraded mode.
+
+Keep generation complete, output queued and playback complete distinct. Audio remains
+interruptible after generation ends. Define offsets as sample frames per channel
+with rate, channel count and response/generation identity. Confirmed interruption
+invalidates output, requests player flush/mute and provider truncation at the last
+acknowledged audible position. Device acknowledgement, not a cancel return, proves
+silence. Fence late packets/results after cancellation and reconnection.
+
+No named model is supported by having this interface. Each adapter needs a verified
+protocol, declared capabilities and conformance tests. Cross-provider fallback must
+reconcile context, tasks and output; native model state is not transparently portable.
+
+## 7. Agents, tools and context (planned)
+
+Custom agents receive structured input, immutable versioned context, task/delegation
+identity, deadlines, cancellation, budgets and authorized tool scope. They emit
+accepted/progress/content/tool/artifact/result events and one terminal outcome.
+Support the existing loop, deterministic local logic and remote agents without
+importing framework SDKs into the core. Private model reasoning is not required.
+
+Delegation policy chooses silence, one acknowledgement or meaningful progress; the
+conversation controller owns the speaker. Acknowledgement reduces conversational
+silence, not task duration. Propagate child budgets/deadlines, fence obsolete results
+and deduplicate remote events. Cancellation request is not confirmed termination.
+
+Tools separate validation, authorization, approval, execution and audit. MCP is an
+adapter, not the security model. Treat tool content as untrusted; run untrusted native
+plugins out of process. Retry side effects only under explicit idempotency policy.
+History rollback cannot undo an external action; reconcile or compensate it instead.
+`ContextBuilder` supplies scoped snapshots, not mutable whole-session history.
+Keep task context, agent history and optional persistent memory distinct. Unheard
+assistant audio must not be committed as heard user context.
+
+## 8. Observability, transport and replay
+
+Preserve `byteturn_*` metrics during a separate naming migration. Provider timings
+retain DNS/connect/TLS/first-byte/total endpoints. ASR final uses declared EOU → final
+transcript; LLM TTFT and TTS first audio start at their respective request boundaries.
+S2S first generated audio, first audible acknowledgement, first useful answer,
+cancellation dispatch and player-confirmed stop must remain separate measurements.
+Unknown endpoints are unavailable, not zero. Do not add overlapping stage latencies.
+
+Runtime metrics add reserved/starting/running/stopping/retiring counts, rejection
+reasons, startup/retirement duration, failures, notification depth/high-watermark,
+drops and observer failures. IDs belong in traces, not unbounded metric labels.
+Define latency/CPU/memory thresholds from declared hardware, concurrency, provider,
+network, audio and queue settings. Report failed/cancelled samples. A proposed
+“delegation hidden ratio” is diagnostic only; filler speech is not a success KPI.
+
+`CurlHttpTransport` retains TLS verification, cancellation, deadlines, response limits
+and retry mechanics; protocol serialization remains in adapters. Never restart a
+stream after body delivery; earlier retries can still duplicate work or cost.
+WebSocket/WebRTC integrations are not supplied by HTTP/SSE support alone.
+
+Use fake clocks, scripted engines/providers and recorded outcomes early. Determinism
+applies to control/reconciliation logic and recorded inputs, not live model calls.
+Replay disables side effects and records schema/policy versions, clock mappings and
+gaps. Payload/audio persistence is opt-in, bounded and privacy-controlled.
 
 ## 9. Migration and acceptance
 
-The next implementation sequence is deliberately narrower than the target:
+Next: Runtime Manager admission/ownership/supervision, then complete pipeline controls,
+then native duplex/playback unification, followed by minimal custom-agent delegation.
+Keep namespace/target renames separate and preserve license/attribution notices.
+Do not remove legacy interfaces until their replacements have equivalent tests.
 
-1. Harden canonical timeline admission, lifecycle ownership, and callback tests.
-2. Complete pipeline event wiring and explicit speech/interruption controls.
-3. Bring native duplex behind the same engine contract and conformance suite.
-4. Introduce the minimal custom-agent/delegation boundary, then tool policy and
-   context adapters; preserve the existing agent as a compatibility backend.
-
-Do not remove `Conversation`, `AsyncSession`, legacy turn IDs, or metric names
-until their replacement path has equivalent behavior and tests. Keep mechanical
-namespace/target renames separate from behavioral changes. Preserve license and
-attribution notices during renaming.
-
-Acceptance requires the existing pipeline regressions plus real-adapter overlap,
-start/stop races, startup failure, stale callbacks/results, bounded queues,
-ordered timeline metadata, and playback-aware cancellation tests. Run `make test`
-and the canonical CMake/CTest build; add sanitizer runs for ownership/concurrency
-changes and a transport/player integration test for physical stop latency.
-A mock overlap test alone is not the completion gate.
-
-See [roadmap.md](roadmap.md) for milestone dependencies and the immediate work
-queue. This design does not commit RealFlow to a model release, pricing claim,
-or vendor benchmark.
+Run `make test`, CMake/CTest, and ownership/concurrency sanitizers where supported.
+Validate duplicate/capacity admission, add/remove/shutdown races, ID reuse, failed
+startup, missing/dropped notifications, observer re-entry, delayed destruction and
+failure isolation. Later engine gates require real-adapter overlap, late output and
+player-confirmed stop, not just booleans or a successful CLI connection.
