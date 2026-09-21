@@ -15,16 +15,18 @@ struct AudioFrame {
 
 enum class Role { System, User, Assistant, Tool };
 
-struct Message {
-  Role role;
-  std::string content;
-  std::string name;
-};
-
 struct ToolCall {
   std::string id;
   std::string name;
   std::string arguments;
+};
+
+struct Message {
+  Role role;
+  std::string content;
+  std::string name;
+  std::vector<ToolCall> tool_calls;
+  std::string tool_call_id;
 };
 
 struct LlmTurn {
@@ -34,4 +36,3 @@ struct LlmTurn {
 };
 
 }  // namespace byteturn
-

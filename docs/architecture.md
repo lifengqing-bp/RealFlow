@@ -28,15 +28,16 @@ ByteTurn translates that separation to realtime voice:
 5. Final assistant text streams through TTS.
 6. New input during playback increments the generation and cancels stale audio.
 
-The synchronous MVP makes the control flow testable. Production work should
-replace blocking provider calls with a session executor and bounded queues while
-preserving these ownership boundaries.
+`SessionExecutor` now provides multiple worker lanes with FIFO serialization per
+session, and `AsyncSession` binds each stateful `Agent` to its lane. Provider
+calls remain synchronous inside a worker; the audio callback path should hand
+off work rather than invoking a blocking provider directly.
 
 ## Planned service layers
 
 - `TransportService`: PCM/WebSocket/RTC adapters.
-- `SessionService`: lifecycle, persistence, configuration, and history policy.
-- `TurnService`: cancellation scope and per-turn metrics.
+- `SessionService`: persistence, configuration, and history compaction policy.
+- `TurnService`: deadlines and per-turn metrics beyond cooperative cancellation.
 - `AgentService`: model/tool loop and context management.
 - `PermissionService`: tool authorization and sandbox policy.
 - `EventSink`: structured transcript, model, tool, audio, and error events.
@@ -46,4 +47,3 @@ preserving these ownership boundaries.
 Track ASR finalization, LLM time-to-first-token, TTS time-to-first-audio,
 end-to-end response latency, and interruption-to-silence. Averages alone are not
 sufficient; report p50, p95, and p99 under a declared concurrency level.
-

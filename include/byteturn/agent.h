@@ -1,6 +1,7 @@
 #pragma once
 
 #include "byteturn/providers.h"
+#include "byteturn/event.h"
 #include "byteturn/tool.h"
 
 #include <cstddef>
@@ -11,8 +12,11 @@ namespace byteturn {
 
 class Agent {
  public:
-  Agent(LlmProvider& llm, ToolRegistry& tools, std::size_t max_steps = 8);
+  Agent(LlmProvider& llm, ToolRegistry& tools, std::size_t max_steps = 8,
+        EventBus* events = nullptr);
   std::string run(std::string user_text);
+  std::string run(std::string user_text, std::string session_id,
+                  std::string turn_id);
   const std::vector<Message>& history() const { return history_; }
 
  private:
@@ -20,7 +24,7 @@ class Agent {
   ToolRegistry& tools_;
   std::size_t max_steps_;
   std::vector<Message> history_;
+  EventBus* events_;
 };
 
 }  // namespace byteturn
-

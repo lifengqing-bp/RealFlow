@@ -52,6 +52,22 @@ Try `echo hello` in the CLI to exercise one structured tool call. The bundled
 providers are intentionally fake; real ASR, LLM, and TTS adapters are the next
 integration layer.
 
+## Runtime APIs
+
+- `SessionExecutor` runs turns asynchronously: turns in one session are FIFO
+  and never overlap, while independent sessions can use separate workers.
+- `AsyncSession` binds an `Agent` and its mutable history to one executor lane;
+  cancellation is cooperative through `CancellationToken`.
+- `EventBus` emits sequenced transcript, turn, model, tool, speech, audio,
+  cancellation, and error events. Subscriber failures are isolated.
+- `OpenAiCompatibleLlm` implements `POST /chat/completions`, including function
+  tool definitions, assistant tool calls, and matching `tool_call_id` results.
+  Inject an `HttpTransport` backed by the HTTP client used by your application.
+
+The adapter deliberately does not ship a TLS/HTTP stack. It can therefore use
+libcurl, an internal client, or a platform transport without adding that choice
+to ByteTurn's core ABI.
+
 ## Repository layout
 
 - `include/byteturn/`: stable public interfaces and state machine
@@ -68,8 +84,8 @@ integration layer.
 
 ## Next milestones
 
-- Async session executor and back-pressure for realtime audio threads.
-- OpenAI-compatible LLM adapter and JSON tool schema.
+- Bounded audio queues and back-pressure for realtime audio threads.
+- Streaming Chat Completions decoding and retry/rate-limit policy.
 - Streaming ASR/TTS adapters and end-of-utterance policy.
 - Metrics for ASR final latency, time-to-first-token, time-to-first-audio, and
   interruption stop latency.

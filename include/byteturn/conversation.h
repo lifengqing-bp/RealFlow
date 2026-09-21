@@ -15,7 +15,8 @@ class Conversation {
   using AudioSink = std::function<void(const AudioFrame&)>;
 
   Conversation(AsrProvider& asr, Agent& agent, TtsProvider& tts,
-               TranscriptSink transcript_sink, AudioSink audio_sink);
+               TranscriptSink transcript_sink, AudioSink audio_sink,
+               EventBus* events = nullptr, std::string session_id = {});
   void push_audio(const AudioFrame& frame);
   void interrupt();
   ConversationState state() const { return state_; }
@@ -30,7 +31,9 @@ class Conversation {
   AudioSink audio_sink_;
   ConversationState state_ = ConversationState::Listening;
   std::uint64_t generation_ = 0;
+  EventBus* events_;
+  std::string session_id_;
+  std::string turn_id_;
 };
 
 }  // namespace byteturn
-
