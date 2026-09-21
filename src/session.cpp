@@ -20,13 +20,14 @@ TurnHandle AsyncSession::submit(std::string user_text, TurnOptions options) {
 
 TurnHandle AsyncSession::submit_streaming(
     std::string user_text, LlmProvider::TextDeltaSink on_text_delta,
-    Completion on_completed, Failure on_failed, TurnOptions options) {
+    Completion on_completed, Failure on_failed, TurnOptions options,
+    EventBus* invocation_events) {
   return executor_.submit_turn(
       session_id_, std::move(options),
       [this, text = std::move(user_text),
        on_text_delta = std::move(on_text_delta),
        on_completed = std::move(on_completed),
-       on_failed = std::move(on_failed)](const TurnContext& context) mutable {
+       on_failed = std::move(on_failed), invocation_events](const TurnContext& context) mutable {
         try {
           if (context.stop_requested())
             throw std::runtime_error(context.expired() ? "turn deadline exceeded"
@@ -36,7 +37,7 @@ TurnHandle AsyncSession::submit_streaming(
               std::move(text), session_id_, context.turn_id(),
               on_text_delta,
               [&context] { return context.stop_requested(); },
-              context.trace_id());
+              context.trace_id(), invocation_events ? invocation_events : events_);
           if (context.stop_requested())
             throw std::runtime_error(context.expired() ? "turn deadline exceeded"
                                                        : "turn cancelled");
@@ -45,12 +46,8 @@ TurnHandle AsyncSession::submit_streaming(
         } catch (...) {
           const auto error = std::current_exception();
           if (on_failed) on_failed(context, error);
-          if (events_ && context.stop_requested()) {
-            events_->publish(
-                {context.expired() ? EventType::Error : EventType::TurnCancelled,
-                 session_id_, context.turn_id(), 0, {},
-                 context.expired() ? "deadline" : "cancelled", {}});
-          }
+          // Agent owns its terminal event. Response/TTS failure is reported by
+          // the conversation completion callback, not as a second agent outcome.
           std::rethrow_exception(error);
         }
       });

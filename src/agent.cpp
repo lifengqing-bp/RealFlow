@@ -63,73 +63,75 @@ std::string Agent::run_streaming(std::string user_text, std::string session_id,
                                  std::string turn_id,
                                  LlmProvider::TextDeltaSink on_text_delta,
                                  std::function<bool()> cancelled,
-                                 std::string trace_id) {
+                                 std::string trace_id,
+                                 EventBus* invocation_events) {
+  EventBus* events = invocation_events ? invocation_events : events_;
   const auto emit = [&](EventType type, std::string name = {},
                         std::string data = {}) {
-    if (events_) events_->publish(
+    if (events) events->publish(
         {type, session_id, turn_id, 0, {}, std::move(name), std::move(data),
          trace_id});
   };
-  emit(EventType::TurnStarted);
   const auto history_checkpoint = history_.size();
-  if (cancelled && cancelled()) throw std::runtime_error("turn cancelled");
-  history_.push_back({Role::User, std::move(user_text), {}, {}, {}});
-  for (std::size_t step = 0; step < max_steps_; ++step) {
-    if (cancelled && cancelled()) {
-      history_.resize(history_checkpoint);
-      throw std::runtime_error("turn cancelled");
-    }
-    emit(EventType::ModelStarted, std::to_string(step));
-    LlmTurn turn;
-    bool received_first_token = false;
-    try {
-      turn = llm_.stream(
-          history_,
-          [&](const std::string& delta) {
-            if (cancelled && cancelled()) return false;
-            if (delta.empty()) return true;
-            if (!received_first_token) {
-              received_first_token = true;
-              emit(EventType::FirstToken, std::to_string(step));
-            }
-            emit(EventType::ModelTextDelta, std::to_string(step), delta);
-            return on_text_delta(delta);
-          },
-          cancelled);
-    } catch (const std::exception& e) {
-      history_.resize(history_checkpoint);
-      emit(EventType::Error, "llm", e.what());
-      throw;
-    }
-    if (cancelled && cancelled()) {
-      history_.resize(history_checkpoint);
-      throw std::runtime_error("turn cancelled");
-    }
-    emit(EventType::ModelCompleted, std::to_string(step), turn.text);
-    history_.push_back({Role::Assistant, turn.text, {}, turn.tool_calls, {}});
-    if (turn.tool_calls.empty()) {
-      emit(EventType::TurnCompleted, {}, turn.text);
-      return turn.text;
-    }
-
-    for (const auto& call : turn.tool_calls) {
-      emit(EventType::ToolStarted, call.name, call.arguments);
-      std::string result;
+  emit(EventType::TurnStarted);
+  try {
+    if (cancelled && cancelled()) throw std::runtime_error("turn cancelled");
+    history_.push_back({Role::User, std::move(user_text), {}, {}, {}});
+    for (std::size_t step = 0; step < max_steps_; ++step) {
+      if (cancelled && cancelled()) throw std::runtime_error("turn cancelled");
+      emit(EventType::ModelStarted, std::to_string(step));
+      LlmTurn turn;
+      bool received_first_token = false;
       try {
-        result = tools_.invoke(call.name, call.arguments, cancelled);
+        turn = llm_.stream(
+            history_,
+            [&](const std::string& delta) {
+              if (cancelled && cancelled()) return false;
+              if (delta.empty()) return true;
+              if (!received_first_token) {
+                received_first_token = true;
+                emit(EventType::FirstToken, std::to_string(step));
+              }
+              emit(EventType::ModelTextDelta, std::to_string(step), delta);
+              return on_text_delta(delta);
+            },
+            cancelled);
       } catch (const std::exception& e) {
-        history_.resize(history_checkpoint);
-        emit(EventType::Error, "tool", e.what());
+        emit(EventType::Error, "llm", e.what());
         throw;
       }
-      emit(EventType::ToolCompleted, call.name, result);
-      history_.push_back({Role::Tool, result, call.name, {}, call.id});
+      if (cancelled && cancelled()) throw std::runtime_error("turn cancelled");
+      if (!turn.complete) throw std::runtime_error("incomplete LLM stream");
+      emit(EventType::ModelCompleted, std::to_string(step), turn.text);
+      history_.push_back({Role::Assistant, turn.text, {}, turn.tool_calls, {}});
+      if (turn.tool_calls.empty()) {
+        emit(EventType::TurnCompleted, {}, turn.text);
+        return turn.text;
+      }
+
+      for (const auto& call : turn.tool_calls) {
+        emit(EventType::ToolStarted, call.name, call.arguments);
+        std::string result;
+        try {
+          result = tools_.invoke(call.name, call.arguments, cancelled);
+        } catch (const std::exception& e) {
+          emit(EventType::Error, "tool", e.what());
+          throw;
+        }
+        emit(EventType::ToolCompleted, call.name, result);
+        history_.push_back({Role::Tool, result, call.name, {}, call.id});
+      }
     }
+    const std::string error = "I stopped because the tool-step limit was reached.";
+    history_.push_back({Role::Assistant, error, {}, {}, {}});
+    emit(EventType::Error, "step_limit", error);
+    emit(EventType::TurnFailed, "step_limit");
+    return error;
+  } catch (...) {
+    history_.resize(history_checkpoint);
+    emit(cancelled && cancelled() ? EventType::TurnCancelled : EventType::TurnFailed);
+    throw;
   }
-  const std::string error = "I stopped because the tool-step limit was reached.";
-  history_.push_back({Role::Assistant, error, {}, {}, {}});
-  emit(EventType::Error, "step_limit", error);
-  return error;
 }
 
 }  // namespace byteturn
