@@ -16,6 +16,24 @@ conversation, interruption correctness, observability, and CPU efficiency.
 - Tool implementations must not depend on audio or transport details.
 - Audio callbacks must remain non-blocking once an asynchronous executor lands.
 
+## Design rules
+
+**Less is more. Solve the current problem with the smallest clear design.**
+
+- Build for demonstrated requirements, not hypothetical future use cases.
+  A roadmap item is not a reason to implement infrastructure early.
+- Prefer existing components and direct code over new abstractions, layers,
+  services, queues, threads, or configuration options.
+- Before adding structure, explain the concrete problem, why a simpler option
+  is insufficient, and the ownership, concurrency, and maintenance costs.
+- Keep changes small and reversible. Remove obsolete code and consolidate
+  duplicate responsibilities before adding new mechanisms.
+- Simplicity must preserve correctness: explicit ownership, safe cancellation,
+  bounded resources, security, and regression tests remain essential.
+
+Review question: **Can we meet the same requirement safely with fewer concepts
+and moving parts?**
+
 ## Engineering rules
 
 - Use C++17 unless a change explicitly raises the baseline.
