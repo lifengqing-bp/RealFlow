@@ -62,3 +62,13 @@ timings. `OpenAiCompatibleLlm` owns only protocol serialization. HTTP retries ca
 increase cost for requests whose response was lost; applications may set
 `max_attempts = 1` or disable `retry_http_errors` when duplicate inference is
 unacceptable.
+
+The streaming path never retries after response body delivery begins, because
+doing so could duplicate already-spoken text. SSE events may split at any byte
+boundary; the parser buffers complete lines and reconstructs text and tool-call
+deltas before committing them to agent history.
+
+Sentence boundaries feed a bounded TTS worker queue. This separates network
+reading from synthesis while retaining backpressure. End-to-end metrics use the
+input EOU event as their acoustic endpoint and the first produced audio frame as
+their output endpoint; hardware playout latency is intentionally not inferred.

@@ -128,10 +128,32 @@ void RuntimeObserver::on_event(const Event& event) {
                         event.type == EventType::ModelStarted ? "model" : "tool";
     std::lock_guard<std::mutex> lock(mutex_);
     starts_[key(event, phase)] = event.timestamp;
+    if (event.type == EventType::ModelStarted)
+      starts_[key(event, "first_token")] = event.timestamp;
+  } else if (event.type == EventType::AsrEndOfUtterance) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    starts_[key(event, "asr_final")] = event.timestamp;
+    starts_[key(event, "s2s_first_audio")] = event.timestamp;
+    starts_[key(event, "conversation_turn")] = event.timestamp;
+  } else if (event.type == EventType::TranscriptFinal) {
+    finish("asr_final", "byteturn_asr_final_latency_ms");
   } else if (event.type == EventType::TurnCompleted) {
     finish("turn", "byteturn_turn_duration_ms");
   } else if (event.type == EventType::ModelCompleted) {
     finish("model", "byteturn_model_duration_ms");
+  } else if (event.type == EventType::FirstToken) {
+    finish("first_token", "byteturn_time_to_first_token_ms");
+  } else if (event.type == EventType::SpeechStarted) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    starts_[key(event, "tts_first_audio")] = event.timestamp;
+    starts_[key(event, "tts_total")] = event.timestamp;
+  } else if (event.type == EventType::FirstAudio) {
+    finish("tts_first_audio", "byteturn_tts_first_audio_latency_ms");
+    finish("s2s_first_audio", "byteturn_s2s_first_audio_latency_ms");
+  } else if (event.type == EventType::SpeechCompleted) {
+    finish("tts_total", "byteturn_tts_total_duration_ms");
+  } else if (event.type == EventType::ConversationTurnCompleted) {
+    finish("conversation_turn", "byteturn_conversation_turn_duration_ms");
   } else if (event.type == EventType::ToolCompleted) {
     finish("tool", "byteturn_tool_duration_ms");
   } else if (event.type == EventType::Error) {
@@ -162,15 +184,22 @@ void JsonEventLogger::write(const Event& event) {
 
 const char* event_type_name(EventType type) {
   switch (type) {
+    case EventType::AsrEndOfUtterance: return "asr_end_of_utterance";
     case EventType::TranscriptPartial: return "transcript_partial";
     case EventType::TranscriptFinal: return "transcript_final";
     case EventType::TurnStarted: return "turn_started";
     case EventType::ModelStarted: return "model_started";
+    case EventType::FirstToken: return "first_token";
+    case EventType::ModelTextDelta: return "model_text_delta";
     case EventType::ModelCompleted: return "model_completed";
     case EventType::ToolStarted: return "tool_started";
     case EventType::ToolCompleted: return "tool_completed";
     case EventType::SpeechStarted: return "speech_started";
+    case EventType::TtsChunkStarted: return "tts_chunk_started";
+    case EventType::FirstAudio: return "first_audio";
     case EventType::AudioOutput: return "audio_output";
+    case EventType::SpeechCompleted: return "speech_completed";
+    case EventType::ConversationTurnCompleted: return "conversation_turn_completed";
     case EventType::TurnCompleted: return "turn_completed";
     case EventType::TurnCancelled: return "turn_cancelled";
     case EventType::Error: return "error";

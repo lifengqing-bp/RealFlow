@@ -14,6 +14,8 @@ add_library(byteturn
   src/session.cpp
   src/observability.cpp
   src/curl_transport.cpp
+  src/sentence_segmenter.cpp
+  src/incremental_tts.cpp
 )
 find_package(Threads REQUIRED)
 find_package(CURL REQUIRED)

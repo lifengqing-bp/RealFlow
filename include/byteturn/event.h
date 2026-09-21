@@ -12,15 +12,22 @@
 namespace byteturn {
 
 enum class EventType {
+  AsrEndOfUtterance,
   TranscriptPartial,
   TranscriptFinal,
   TurnStarted,
   ModelStarted,
+  FirstToken,
+  ModelTextDelta,
   ModelCompleted,
   ToolStarted,
   ToolCompleted,
   SpeechStarted,
+  TtsChunkStarted,
+  FirstAudio,
   AudioOutput,
+  SpeechCompleted,
+  ConversationTurnCompleted,
   TurnCompleted,
   TurnCancelled,
   Error

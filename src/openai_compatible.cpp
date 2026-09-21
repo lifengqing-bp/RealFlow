@@ -3,6 +3,7 @@
 #include <cctype>
 #include <map>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <variant>
 
@@ -21,6 +22,12 @@ struct Json {
     if (it == object->end()) throw std::runtime_error("missing JSON field: " + key);
     return it->second;
   }
+  const Json* find(const std::string& key) const {
+    const auto* object = std::get_if<Object>(&value);
+    if (!object) return nullptr;
+    const auto it = object->find(key);
+    return it == object->end() ? nullptr : &it->second;
+  }
   const Array& array() const {
     const auto* result = std::get_if<Array>(&value);
     if (!result) throw std::runtime_error("expected JSON array");
@@ -29,6 +36,10 @@ struct Json {
   std::string string_or_empty() const {
     const auto* result = std::get_if<std::string>(&value);
     return result ? *result : std::string{};
+  }
+  std::size_t index_or_zero() const {
+    const auto* result = std::get_if<double>(&value);
+    return result && *result >= 0 ? static_cast<std::size_t>(*result) : 0;
   }
 };
 
@@ -110,6 +121,22 @@ class JsonParser {
         case 'n': result.push_back('\n'); break;
         case 'r': result.push_back('\r'); break;
         case 't': result.push_back('\t'); break;
+        case 'u': {
+          unsigned codepoint = hex4();
+          if (codepoint >= 0xd800 && codepoint <= 0xdbff) {
+            if (position_ + 2 > input_.size() || input_[position_] != '\\' ||
+                input_[position_ + 1] != 'u')
+              fail("missing low surrogate");
+            position_ += 2;
+            const unsigned low = hex4();
+            if (low < 0xdc00 || low > 0xdfff) fail("invalid low surrogate");
+            codepoint = 0x10000 + ((codepoint - 0xd800) << 10) + (low - 0xdc00);
+          } else if (codepoint >= 0xdc00 && codepoint <= 0xdfff) {
+            fail("unexpected low surrogate");
+          }
+          append_utf8(result, codepoint);
+          break;
+        }
         default: fail("unsupported escape");
       }
     }
@@ -126,6 +153,37 @@ class JsonParser {
     }
     if (begin == position_) fail("value");
     return Json{std::stod(input_.substr(begin, position_ - begin))};
+  }
+
+  unsigned hex4() {
+    if (position_ + 4 > input_.size()) fail("short unicode escape");
+    unsigned value = 0;
+    for (int i = 0; i < 4; ++i) {
+      const char c = input_[position_++];
+      value <<= 4;
+      if (c >= '0' && c <= '9') value += static_cast<unsigned>(c - '0');
+      else if (c >= 'a' && c <= 'f') value += static_cast<unsigned>(c - 'a' + 10);
+      else if (c >= 'A' && c <= 'F') value += static_cast<unsigned>(c - 'A' + 10);
+      else fail("invalid unicode escape");
+    }
+    return value;
+  }
+
+  static void append_utf8(std::string& output, unsigned codepoint) {
+    if (codepoint <= 0x7f) output.push_back(static_cast<char>(codepoint));
+    else if (codepoint <= 0x7ff) {
+      output.push_back(static_cast<char>(0xc0 | (codepoint >> 6)));
+      output.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+    } else if (codepoint <= 0xffff) {
+      output.push_back(static_cast<char>(0xe0 | (codepoint >> 12)));
+      output.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+      output.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+    } else {
+      output.push_back(static_cast<char>(0xf0 | (codepoint >> 18)));
+      output.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3f)));
+      output.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
+      output.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
+    }
   }
 
   Json literal(const char* text, Json result) {
@@ -202,6 +260,57 @@ std::string message_json(const Message& message) {
   return out + '}';
 }
 
+class SseParser {
+ public:
+  using EventSink = std::function<void(const std::string&)>;
+  explicit SseParser(EventSink sink) : sink_(std::move(sink)) {}
+
+  bool feed(std::string_view bytes) {
+    buffer_.append(bytes.data(), bytes.size());
+    while (true) {
+      const auto newline = buffer_.find('\n');
+      if (newline == std::string::npos) break;
+      std::string line = buffer_.substr(0, newline);
+      buffer_.erase(0, newline + 1);
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      process_line(line);
+    }
+    return true;
+  }
+
+  void finish() {
+    if (!buffer_.empty()) {
+      if (buffer_.back() == '\r') buffer_.pop_back();
+      process_line(buffer_);
+      buffer_.clear();
+    }
+    dispatch();
+  }
+
+ private:
+  void process_line(const std::string& line) {
+    if (line.empty()) {
+      dispatch();
+      return;
+    }
+    if (line.rfind("data:", 0) != 0) return;
+    std::string value = line.substr(5);
+    if (!value.empty() && value.front() == ' ') value.erase(value.begin());
+    if (!data_.empty()) data_ += '\n';
+    data_ += value;
+  }
+  void dispatch() {
+    if (data_.empty()) return;
+    std::string event;
+    event.swap(data_);
+    sink_(event);
+  }
+
+  EventSink sink_;
+  std::string buffer_;
+  std::string data_;
+};
+
 }  // namespace
 
 OpenAiCompatibleLlm::OpenAiCompatibleLlm(OpenAiCompatibleConfig config,
@@ -235,7 +344,7 @@ HttpRequest OpenAiCompatibleLlm::make_request(
   std::string base = config_.base_url;
   while (!base.empty() && base.back() == '/') base.pop_back();
   HttpRequest request{"POST", base + "/chat/completions",
-                      {{"Content-Type", "application/json"}}, std::move(body), {}};
+                      {{"Content-Type", "application/json"}}, std::move(body), {}, {}};
   if (!config_.api_key.empty())
     request.headers["Authorization"] = "Bearer " + config_.api_key;
   return request;
@@ -274,6 +383,61 @@ LlmTurn OpenAiCompatibleLlm::complete(
   HttpRequest request = make_request(history);
   request.cancelled = cancelled;
   return parse_response(transport_.perform(request));
+}
+
+LlmTurn OpenAiCompatibleLlm::stream(
+    const std::vector<Message>& history, const TextDeltaSink& on_text_delta,
+    const std::function<bool()>& cancelled) {
+  HttpRequest request = make_request(history);
+  request.cancelled = cancelled;
+  request.body.pop_back();
+  request.body += ",\"stream\":true}";
+  request.headers["Accept"] = "text/event-stream";
+
+  LlmTurn result;
+  bool done = false;
+  SseParser parser([&](const std::string& event) {
+    if (event == "[DONE]") {
+      done = true;
+      return;
+    }
+    const Json root = JsonParser(event).parse();
+    const Json* choices_value = root.find("choices");
+    if (!choices_value || choices_value->array().empty()) return;
+    const Json& choice = choices_value->array().front();
+    const Json* delta = choice.find("delta");
+    if (!delta) return;
+    if (const Json* content = delta->find("content")) {
+      const std::string text = content->string_or_empty();
+      if (!text.empty()) {
+        result.text += text;
+        if (!on_text_delta(text))
+          throw std::runtime_error("LLM stream consumer stopped");
+      }
+    }
+    if (const Json* calls = delta->find("tool_calls")) {
+      for (const auto& item : calls->array()) {
+        const Json* index = item.find("index");
+        const std::size_t i = index ? index->index_or_zero() : 0;
+        if (result.tool_calls.size() <= i) result.tool_calls.resize(i + 1);
+        auto& call = result.tool_calls[i];
+        if (const Json* id = item.find("id")) call.id += id->string_or_empty();
+        if (const Json* function = item.find("function")) {
+          if (const Json* name = function->find("name"))
+            call.name += name->string_or_empty();
+          if (const Json* arguments = function->find("arguments"))
+            call.arguments += arguments->string_or_empty();
+        }
+      }
+    }
+  });
+  request.body_sink = [&](std::string_view bytes) { return parser.feed(bytes); };
+  const HttpResponse response = transport_.perform(request);
+  if (response.status < 200 || response.status >= 300)
+    throw std::runtime_error("LLM HTTP status " + std::to_string(response.status));
+  parser.finish();
+  result.complete = done;
+  return result;
 }
 
 }  // namespace byteturn

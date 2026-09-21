@@ -34,6 +34,15 @@ std::string Agent::run(std::string user_text) {
 
 std::string Agent::run(std::string user_text, std::string session_id,
                        std::string turn_id, std::function<bool()> cancelled) {
+  return run_streaming(std::move(user_text), std::move(session_id),
+                       std::move(turn_id), [](const std::string&) { return true; },
+                       std::move(cancelled));
+}
+
+std::string Agent::run_streaming(std::string user_text, std::string session_id,
+                                 std::string turn_id,
+                                 LlmProvider::TextDeltaSink on_text_delta,
+                                 std::function<bool()> cancelled) {
   const auto emit = [&](EventType type, std::string name = {},
                         std::string data = {}) {
     if (events_) events_->publish(
@@ -50,8 +59,20 @@ std::string Agent::run(std::string user_text, std::string session_id,
     }
     emit(EventType::ModelStarted, std::to_string(step));
     LlmTurn turn;
+    bool received_first_token = false;
     try {
-      turn = llm_.complete(history_, cancelled);
+      turn = llm_.stream(
+          history_,
+          [&](const std::string& delta) {
+            if (delta.empty()) return true;
+            if (!received_first_token) {
+              received_first_token = true;
+              emit(EventType::FirstToken, std::to_string(step));
+            }
+            emit(EventType::ModelTextDelta, std::to_string(step), delta);
+            return on_text_delta(delta);
+          },
+          cancelled);
     } catch (const std::exception& e) {
       history_.resize(history_checkpoint);
       emit(EventType::Error, "llm", e.what());

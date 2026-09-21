@@ -3,7 +3,9 @@
 #include "byteturn/agent.h"
 
 #include <functional>
+#include <atomic>
 #include <string>
+#include <mutex>
 
 namespace byteturn {
 
@@ -19,7 +21,7 @@ class Conversation {
                EventBus* events = nullptr, std::string session_id = {});
   void push_audio(const AudioFrame& frame);
   void interrupt();
-  ConversationState state() const { return state_; }
+  ConversationState state() const { return state_.load(std::memory_order_acquire); }
 
  private:
   void on_transcript(std::string text, bool is_final);
@@ -29,10 +31,12 @@ class Conversation {
   TtsProvider& tts_;
   TranscriptSink transcript_sink_;
   AudioSink audio_sink_;
-  ConversationState state_ = ConversationState::Listening;
-  std::uint64_t generation_ = 0;
+  std::atomic<ConversationState> state_{ConversationState::Listening};
+  std::atomic<std::uint64_t> generation_{0};
+  std::atomic<std::uint64_t> next_turn_id_{1};
   EventBus* events_;
   std::string session_id_;
+  mutable std::mutex turn_mutex_;
   std::string turn_id_;
 };
 

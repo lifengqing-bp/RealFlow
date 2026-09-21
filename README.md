@@ -95,6 +95,33 @@ then expose `MetricsRegistry::prometheus_text()` from the application's metrics
 endpoint. `JsonEventLogger` writes correlated JSON lines and excludes event
 payloads by default to avoid logging transcripts, prompts, and tool data.
 
+### Latency metrics
+
+| Metric | Start | End |
+|---|---|---|
+| `byteturn_conversation_turn_duration_ms` | input end-of-utterance | incremental TTS synthesis completed |
+| `byteturn_asr_final_latency_ms` | input end-of-utterance | final transcript callback |
+| `byteturn_time_to_first_token_ms` | LLM request starts | first non-empty text delta |
+| `byteturn_model_duration_ms` | LLM request starts | SSE stream/model response completes |
+| `byteturn_tts_first_audio_latency_ms` | first sentence submitted to TTS | first audio frame produced |
+| `byteturn_tts_total_duration_ms` | first sentence submitted to TTS | final TTS chunk completes |
+| `byteturn_s2s_first_audio_latency_ms` | input end-of-utterance | first output audio frame produced |
+| `byteturn_provider_first_packet_ms` | logical HTTP request, including retries | first response body bytes |
+| `byteturn_provider_request_duration_ms` | logical HTTP request, including backoff | successful response completes |
+
+ASR and S2S metrics require the input `AudioFrame::end_of_utterance` marker.
+“First audio” means the first frame delivered to the application audio sink;
+device buffering and physical playout are outside the runtime measurement.
+
+## Streaming speech pipeline
+
+`OpenAiCompatibleLlm::stream` incrementally parses SSE across arbitrary network
+chunk boundaries and reassembles indexed tool-call fragments. Text deltas flow
+through `SentenceSegmenter`, which supports English and CJK terminal punctuation,
+soft punctuation thresholds, and a hard maximum chunk size. A bounded
+`IncrementalTtsPipeline` synthesizes completed sentences on a separate worker so
+TTS can overlap continued LLM generation without unbounded buffering.
+
 ## Repository layout
 
 - `include/byteturn/`: stable public interfaces and state machine

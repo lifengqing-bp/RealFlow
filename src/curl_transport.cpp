@@ -9,6 +9,7 @@
 #include <random>
 #include <stdexcept>
 #include <thread>
+#include <exception>
 
 namespace byteturn {
 namespace {
@@ -17,6 +18,9 @@ struct TransferState {
   HttpResponse response;
   std::size_t limit = 0;
   bool too_large = false;
+  std::size_t received_bytes = 0;
+  std::exception_ptr sink_error;
+  std::chrono::steady_clock::time_point first_body_at{};
   const HttpRequest* request = nullptr;
 };
 
@@ -55,9 +59,20 @@ std::string lower(std::string value) {
 size_t write_body(char* data, size_t size, size_t count, void* userdata) {
   auto& state = *static_cast<TransferState*>(userdata);
   const std::size_t bytes = size * count;
-  if (bytes > state.limit - std::min(state.limit, state.response.body.size())) {
+  if (state.first_body_at.time_since_epoch().count() == 0)
+    state.first_body_at = std::chrono::steady_clock::now();
+  if (bytes > state.limit - std::min(state.limit, state.received_bytes)) {
     state.too_large = true;
     return 0;
+  }
+  state.received_bytes += bytes;
+  if (state.request->body_sink) {
+    try {
+      return state.request->body_sink(std::string_view(data, bytes)) ? bytes : 0;
+    } catch (...) {
+      state.sink_error = std::current_exception();
+      return 0;
+    }
   }
   state.response.body.append(data, bytes);
   return bytes;
@@ -146,6 +161,7 @@ std::chrono::milliseconds CurlHttpTransport::parse_retry_after(
 }
 
 HttpResponse CurlHttpTransport::perform(const HttpRequest& request) {
+  const auto request_started = std::chrono::steady_clock::now();
   std::chrono::milliseconds backoff = config_.initial_backoff;
   for (unsigned attempt = 1; attempt <= config_.max_attempts; ++attempt) {
     if (request.cancelled && request.cancelled())
@@ -238,10 +254,12 @@ HttpResponse CurlHttpTransport::perform(const HttpRequest& request) {
       }
     }
     if (state.too_large) throw std::runtime_error("HTTP response exceeds configured limit");
+    if (state.sink_error) std::rethrow_exception(state.sink_error);
     if (code == CURLE_ABORTED_BY_CALLBACK)
       throw std::runtime_error("HTTP request cancelled");
 
     const bool retry = attempt < config_.max_attempts &&
+        (!request.body_sink || state.received_bytes == 0) &&
         (retryable_curl(code) ||
          (code == CURLE_OK && config_.retry_http_errors &&
           retryable_http_status(state.response.status)));
@@ -250,6 +268,18 @@ HttpResponse CurlHttpTransport::perform(const HttpRequest& request) {
         if (config_.metrics) config_.metrics->increment("byteturn_http_errors_total");
         const std::string detail = error[0] ? error : curl_easy_strerror(code);
         throw std::runtime_error("HTTP transport failed: " + detail);
+      }
+      if (config_.metrics) {
+        if (state.first_body_at.time_since_epoch().count() != 0) {
+          const double first_packet_ms = std::chrono::duration<double, std::milli>(
+              state.first_body_at - request_started).count();
+          config_.metrics->observe("byteturn_provider_first_packet_ms",
+                                   first_packet_ms);
+        }
+        config_.metrics->observe(
+            "byteturn_provider_request_duration_ms",
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - request_started).count());
       }
       return state.response;
     }

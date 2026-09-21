@@ -5,6 +5,7 @@
 #include <map>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace byteturn {
@@ -15,6 +16,7 @@ struct HttpRequest {
   std::map<std::string, std::string> headers;
   std::string body;
   std::function<bool()> cancelled;
+  std::function<bool(std::string_view)> body_sink;
 };
 
 struct HttpResponse {
@@ -54,6 +56,9 @@ class OpenAiCompatibleLlm final : public LlmProvider {
   LlmTurn complete(const std::vector<Message>& history) override;
   LlmTurn complete(const std::vector<Message>& history,
                    const std::function<bool()>& cancelled) override;
+  LlmTurn stream(const std::vector<Message>& history,
+                 const TextDeltaSink& on_text_delta,
+                 const std::function<bool()>& cancelled) override;
 
   HttpRequest make_request(const std::vector<Message>& history) const;
   static LlmTurn parse_response(const HttpResponse& response);

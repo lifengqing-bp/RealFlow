@@ -4,6 +4,8 @@
 #include "byteturn/openai_compatible.h"
 #include "byteturn/observability.h"
 #include "byteturn/curl_transport.h"
+#include "byteturn/sentence_segmenter.h"
+#include "byteturn/incremental_tts.h"
 
 #include <atomic>
 #include <chrono>
@@ -29,10 +31,34 @@ class FakeHttp final : public HttpTransport {
  public:
   HttpResponse perform(const HttpRequest& request) override {
     last_request = request;
+    for (const auto& chunk : stream_chunks)
+      if (request.body_sink && !request.body_sink(chunk)) break;
     return response;
   }
   HttpRequest last_request;
   HttpResponse response;
+  std::vector<std::string> stream_chunks;
+};
+
+class RecordingTts final : public TtsProvider {
+ public:
+  void synthesize(const std::string& text,
+                  const std::function<bool(const AudioFrame&)>& on_audio) override {
+    synthesize_chunk(text, on_audio);
+  }
+  void begin_utterance() override { ++begins; }
+  void synthesize_chunk(
+      const std::string& text,
+      const std::function<bool(const AudioFrame&)>& on_audio) override {
+    chunks.push_back(text);
+    on_audio({{1, 2, 3}, 16000, 1, false});
+  }
+  void end_utterance() override { ++ends; }
+  void cancel() override { ++cancels; }
+  std::vector<std::string> chunks;
+  int begins = 0;
+  int ends = 0;
+  int cancels = 0;
 };
 
 class CancellableLlm final : public LlmProvider {
@@ -134,6 +160,69 @@ void test_openai_compatible_adapter() {
           "tool arguments decoded");
 }
 
+void test_openai_sse_stream() {
+  FakeHttp http;
+  http.response.status = 200;
+  http.stream_chunks = {
+      "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n"
+      "data: {\"choices\":[{\"delta\":{\"content\":\" world. \"}}]}\n",
+      "\n"
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_\",\"function\":{\"name\":\"wea\",\"arguments\":\"{\\\"city\\\":\"}}]}}]}\n\n",
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"1\",\"function\":{\"name\":\"ther\",\"arguments\":\"\\\"Sydney\\\"}\"}}]}}]}\n\n"
+      "data: [DONE]\n\n"};
+  OpenAiCompatibleConfig config;
+  config.base_url = "https://example.test/v1";
+  config.model = "stream-model";
+  OpenAiCompatibleLlm llm(config, http);
+  std::string observed;
+  const auto turn = llm.stream(
+      {{Role::User, "hello", {}, {}, {}}},
+      [&](const std::string& delta) {
+        observed += delta;
+        return true;
+      },
+      [] { return false; });
+  require(observed == "Hello world. ", "SSE text deltas delivered in order");
+  require(turn.text == observed && turn.complete, "SSE completion assembled");
+  require(turn.tool_calls.size() == 1 && turn.tool_calls[0].id == "call_1" &&
+              turn.tool_calls[0].name == "weather" &&
+              turn.tool_calls[0].arguments == R"({"city":"Sydney"})",
+          "streamed tool call fragments assembled by index");
+  require(http.last_request.body.find("\"stream\":true") != std::string::npos,
+          "streaming requested");
+}
+
+void test_sentence_segmenter() {
+  SentenceSegmenter segmenter({4, 12, 24});
+  require(segmenter.push("Hello world.").empty(),
+          "period waits for following whitespace");
+  auto english = segmenter.push(" Next sentence!");
+  require(english.size() == 2 && english[0] == "Hello world." &&
+              english[1] == "Next sentence!",
+          "English boundaries across token chunks");
+  segmenter.reset();
+  auto chinese = segmenter.push("这是第一句话。这里是第二句话！");
+  require(chinese.size() == 2, "Chinese punctuation segmented");
+}
+
+void test_incremental_tts() {
+  RecordingTts tts;
+  std::vector<std::size_t> frames;
+  IncrementalTtsPipeline pipeline(
+      tts, [&](const AudioFrame& frame) {
+        frames.push_back(frame.samples.size());
+        return true;
+      });
+  require(pipeline.push("one."), "first TTS chunk queued");
+  require(pipeline.push("two."), "second TTS chunk queued");
+  pipeline.finish();
+  require(tts.begins == 1 && tts.ends == 1 && tts.cancels == 0,
+          "incremental utterance lifecycle");
+  require(tts.chunks == std::vector<std::string>({"one.", "two."}),
+          "TTS chunks preserve order");
+  require(frames.size() == 2, "audio streamed from every TTS chunk");
+}
+
 void test_observability() {
   EventBus events;
   MetricsRegistry metrics;
@@ -142,6 +231,22 @@ void test_observability() {
   JsonEventLogger logger(events, logs);
   const auto start = std::chrono::steady_clock::now();
   events.publish({EventType::TurnStarted, "s", "t", 0, start, {}, "secret"});
+  events.publish({EventType::AsrEndOfUtterance, "s", "t", 0, start, {}, {}});
+  events.publish({EventType::TranscriptFinal, "s", "t", 0,
+                  start + std::chrono::milliseconds(20), {}, {}});
+  events.publish({EventType::ModelStarted, "s", "t", 0, start, "0", {}});
+  events.publish({EventType::FirstToken, "s", "t", 0,
+                  start + std::chrono::milliseconds(7), "0", {}});
+  events.publish({EventType::ModelCompleted, "s", "t", 0,
+                  start + std::chrono::milliseconds(30), "0", {}});
+  events.publish({EventType::SpeechStarted, "s", "t", 0,
+                  start + std::chrono::milliseconds(35), {}, {}});
+  events.publish({EventType::FirstAudio, "s", "t", 0,
+                  start + std::chrono::milliseconds(50), {}, {}});
+  events.publish({EventType::SpeechCompleted, "s", "t", 0,
+                  start + std::chrono::milliseconds(90), {}, {}});
+  events.publish({EventType::ConversationTurnCompleted, "s", "t", 0,
+                  start + std::chrono::milliseconds(90), {}, {}});
   events.publish({EventType::TurnCompleted, "s", "t", 0,
                   start + std::chrono::milliseconds(12), {}, "private reply"});
   require(metrics.counter("byteturn_events_turn_started_total") == 1,
@@ -152,6 +257,20 @@ void test_observability() {
   require(metrics.prometheus_text().find("byteturn_turn_duration_ms_count 1") !=
               std::string::npos,
           "Prometheus rendering");
+  require(metrics.histogram("byteturn_time_to_first_token_ms").count == 1,
+          "time-to-first-token histogram");
+  require(metrics.histogram("byteturn_asr_final_latency_ms").count == 1,
+          "ASR final latency histogram");
+  require(metrics.histogram("byteturn_model_duration_ms").count == 1,
+          "LLM total latency histogram");
+  require(metrics.histogram("byteturn_tts_first_audio_latency_ms").count == 1,
+          "TTS first-audio histogram");
+  require(metrics.histogram("byteturn_tts_total_duration_ms").count == 1,
+          "TTS total histogram");
+  require(metrics.histogram("byteturn_s2s_first_audio_latency_ms").count == 1,
+          "speech-to-speech first-audio histogram");
+  require(metrics.histogram("byteturn_conversation_turn_duration_ms").count == 1,
+          "end-to-end turn histogram");
   require(logs.str().find("private reply") == std::string::npos,
           "event payload redacted by default");
   require(logs.str().find("\"session_id\":\"s\"") != std::string::npos,
@@ -191,6 +310,9 @@ int main() {
   test_agent_and_events();
   test_session_executor();
   test_openai_compatible_adapter();
+  test_openai_sse_stream();
+  test_sentence_segmenter();
+  test_incremental_tts();
   test_observability();
   test_curl_policy();
   test_cancellation_reaches_provider();
