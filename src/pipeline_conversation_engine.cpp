@@ -34,6 +34,12 @@ bool PipelineConversationEngine::push_audio(AudioFrame frame) {
   return conversation_ && conversation_->push_audio(frame);
 }
 
+bool PipelineConversationEngine::cancel_response() {
+  if (!conversation_) return false;
+  conversation_->interrupt();
+  return true;
+}
+
 void PipelineConversationEngine::handle_event(const Event&) {
   // External semantic events are already recorded by ConversationSession.
   // The current pipeline has no provider-independent control events to consume.
@@ -45,55 +51,29 @@ void PipelineConversationEngine::stop() {
     bridge_bus_.unsubscribe(bridge_subscription_);
     bridge_subscription_ = 0;
   }
-  std::lock_guard<std::mutex> lock(state_mutex_);
-  state_ = {};
 }
 
 ConversationCapabilities PipelineConversationEngine::capabilities() const {
   ConversationCapabilities value;
   value.transcript_available = true;
+  value.response_cancellation = true;
   return value;
 }
 
 ConversationStateSnapshot PipelineConversationEngine::state() const {
-  std::lock_guard<std::mutex> lock(state_mutex_);
-  return state_;
+  // Read the pipeline's state directly; best-effort/out-of-order observations
+  // must not restore an already cancelled response. These are generation flags,
+  // not player acknowledgements. User speech is not inferred from raw PCM.
+  ConversationStateSnapshot value;
+  if (conversation_) {
+    const auto phase = conversation_->state();
+    value.agent_speaking = phase == ConversationState::Speaking;
+    value.reasoning = phase == ConversationState::Thinking;
+  }
+  return value;
 }
 
 void PipelineConversationEngine::on_event(const Event& event) {
-  {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    switch (event.type) {
-      case EventType::InputSpeechStarted:
-        state_.user_speaking = true;
-        break;
-      case EventType::InputSpeechEnded:
-        state_.user_speaking = false;
-        break;
-      case EventType::ModelStarted:
-        state_.reasoning = true;
-        break;
-      case EventType::ModelCompleted:
-      case EventType::TurnCancelled:
-        state_.reasoning = false;
-        break;
-      case EventType::SpeechStarted:
-        state_.agent_speaking = true;
-        break;
-      case EventType::SpeechCompleted:
-      case EventType::OutputCancelled:
-        state_.agent_speaking = false;
-        break;
-      case EventType::BargeInDetected:
-        state_.interruption_pending = true;
-        break;
-      case EventType::ConversationTurnCompleted:
-        state_.interruption_pending = false;
-        break;
-      default:
-        break;
-    }
-  }
   (void)context_.emit(event);
 }
 

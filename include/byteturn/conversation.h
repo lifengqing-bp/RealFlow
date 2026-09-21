@@ -37,12 +37,15 @@ class Conversation {
   Conversation(const Conversation&) = delete;
   Conversation& operator=(const Conversation&) = delete;
   bool push_audio(const AudioFrame& frame);
+  // Cancel the current/pending response, not the microphone or ASR utterance.
+  // Call from interaction policy (e.g. confirmed correction), not every frame.
+  // Audio already handed to the player must be flushed by that player.
   void interrupt();
   ConversationState state() const { return state_.load(std::memory_order_acquire); }
 
  private:
   void on_transcript(std::string text, bool is_final,
-                     std::uint64_t callback_generation);
+                     std::string input_turn_id);
   void audio_loop();
   void reap_turns();
 
@@ -57,13 +60,15 @@ class Conversation {
   EventBus* events_;
   std::string session_id_;
   ConversationConfig config_;
+  // Serializes response submission against explicit cancellation. Provider
+  // cancellation is a non-waiting signal; no provider work is awaited here.
+  std::mutex submission_mutex_;
   mutable std::mutex turn_mutex_;
   std::string turn_id_;
   std::mutex audio_mutex_;
   std::condition_variable audio_cv_;
   std::deque<AudioFrame> audio_queue_;
   std::thread audio_worker_;
-  bool reset_asr_ = false;
   bool stopping_ = false;
   std::mutex handles_mutex_;
   std::vector<std::shared_future<std::string>> active_turns_;

@@ -35,13 +35,16 @@ Conversation::Conversation(AsrProvider& asr, AsyncSession& session,
 }
 
 Conversation::~Conversation() {
-  alive_->store(false, std::memory_order_release);
-  session_.cancel();
-  tts_.cancel();
+  {
+    std::lock_guard<std::mutex> submit(submission_mutex_);
+    alive_->store(false, std::memory_order_release);
+    ++generation_;
+    session_.cancel();
+    tts_.cancel();
+  }
   {
     std::lock_guard<std::mutex> lock(audio_mutex_);
     stopping_ = true;
-    reset_asr_ = true;
     audio_queue_.clear();
   }
   asr_.reset();
@@ -63,8 +66,6 @@ Conversation::~Conversation() {
 
 bool Conversation::push_audio(const AudioFrame& frame) {
   if (!alive_->load(std::memory_order_acquire)) return false;
-  if (state_.load(std::memory_order_acquire) == ConversationState::Speaking)
-    interrupt();
   bool overloaded = false;
   {
     std::lock_guard<std::mutex> lock(audio_mutex_);
@@ -87,93 +88,79 @@ bool Conversation::push_audio(const AudioFrame& frame) {
 }
 
 void Conversation::interrupt() {
-  ++generation_;
-  session_.cancel();
-  tts_.cancel();
-  state_ = ConversationState::Listening;
   std::string turn_id;
   {
-    std::lock_guard<std::mutex> lock(turn_mutex_);
-    turn_id = turn_id_;
+    std::lock_guard<std::mutex> submit(submission_mutex_);
+    {
+      std::lock_guard<std::mutex> lock(turn_mutex_);
+      ++generation_;
+      state_ = ConversationState::Listening;
+      turn_id.swap(turn_id_);
+    }
+    session_.cancel();
+    tts_.cancel();
   }
-  {
-    std::lock_guard<std::mutex> lock(audio_mutex_);
-    reset_asr_ = true;
-    audio_queue_.clear();
-  }
-  audio_cv_.notify_one();
+  // Input may already contain the correction. Neither clear its queue nor
+  // reset the recognizer; response cancellation is not input cancellation.
   if (events_) events_->publish(
-      {EventType::TurnCancelled, session_id_, turn_id, 0, {}, "barge_in", {}});
+      {EventType::TurnCancelled, session_id_, turn_id, 0, {},
+       "response_cancelled", {}});
 }
 
 void Conversation::audio_loop() {
   const auto life = alive_;
   while (true) {
     AudioFrame frame;
-    bool reset = false;
     {
       std::unique_lock<std::mutex> lock(audio_mutex_);
-      audio_cv_.wait(lock, [this] {
-        return stopping_ || reset_asr_ || !audio_queue_.empty();
-      });
+      audio_cv_.wait(lock, [this] { return stopping_ || !audio_queue_.empty(); });
       if (stopping_) break;
-      if (reset_asr_) {
-        reset = true;
-        reset_asr_ = false;
-      }
-      if (!audio_queue_.empty()) {
-        frame = std::move(audio_queue_.front());
-        audio_queue_.pop_front();
-      } else if (!reset) {
-        continue;
-      }
+      frame = std::move(audio_queue_.front());
+      audio_queue_.pop_front();
     }
-    if (reset) asr_.reset();
     if (frame.samples.empty() && !frame.end_of_utterance) continue;
 
-    state_ = ConversationState::Listening;
+    std::string input_turn_id;
     if (frame.end_of_utterance) {
-      std::string turn_id;
-      {
-        std::lock_guard<std::mutex> lock(turn_mutex_);
-        turn_id_ = std::to_string(
-            next_turn_id_.fetch_add(1, std::memory_order_relaxed));
-        turn_id = turn_id_;
-      }
+      input_turn_id = std::to_string(
+          next_turn_id_.fetch_add(1, std::memory_order_relaxed));
       if (events_) events_->publish(
-          {EventType::AsrEndOfUtterance, session_id_, turn_id, 0, {}, {}, {}});
+          {EventType::AsrEndOfUtterance, session_id_, input_turn_id, 0, {}, {}, {}});
     }
-    const auto callback_generation = generation_.load(std::memory_order_acquire);
-    asr_.push(frame, [this, life, callback_generation](std::string text, bool final) {
+    // ASR callbacks belong to input, not the generation being cancelled.
+    asr_.push(frame, [this, life, input_turn_id](std::string text, bool final) {
       if (!life->load(std::memory_order_acquire)) return;
-      on_transcript(std::move(text), final, callback_generation);
+      on_transcript(std::move(text), final, input_turn_id);
     });
   }
 }
 
 void Conversation::on_transcript(std::string text, bool is_final,
-                                 std::uint64_t callback_generation) {
-  if (callback_generation != generation_.load(std::memory_order_acquire)) return;
+                                 std::string input_turn_id) {
   transcript_sink_(text, is_final);
-  std::string active_turn_id;
-  {
-    std::lock_guard<std::mutex> lock(turn_mutex_);
-    if (is_final && !text.empty() && turn_id_.empty())
-      turn_id_ = std::to_string(
-          next_turn_id_.fetch_add(1, std::memory_order_relaxed));
-    active_turn_id = turn_id_;
-  }
+  if (is_final && !text.empty() && input_turn_id.empty())
+    input_turn_id = std::to_string(
+        next_turn_id_.fetch_add(1, std::memory_order_relaxed));
   if (events_) events_->publish(
       {is_final ? EventType::TranscriptFinal : EventType::TranscriptPartial,
-       session_id_, active_turn_id, 0, {}, {}, text});
+       session_id_, input_turn_id, 0, {}, {}, text});
   if (!is_final || text.empty()) return;
 
-  state_ = ConversationState::Thinking;
+  std::unique_lock<std::mutex> submit(submission_mutex_);
+  if (!alive_->load(std::memory_order_acquire)) return;
   const auto my_generation = generation_.load(std::memory_order_acquire);
+  const auto active_turn_id = std::move(input_turn_id);
+  {
+    std::lock_guard<std::mutex> lock(turn_mutex_);
+    state_ = ConversationState::Thinking;
+    turn_id_ = active_turn_id;
+  }
   const auto life = alive_;
   auto turn = std::make_shared<SpeechTurn>();
   const auto first_audio = turn->first_audio;
-  turn->speech = std::make_unique<IncrementalTtsPipeline>(
+  const auto start_speech = [this, life, turn, my_generation,
+                             active_turn_id, first_audio] {
+    turn->speech = std::make_unique<IncrementalTtsPipeline>(
       tts_,
       [this, life, my_generation, active_turn_id, first_audio](const AudioFrame& frame) {
         if (!life->load(std::memory_order_acquire) ||
@@ -193,15 +180,22 @@ void Conversation::on_transcript(std::string text, bool is_final,
                my_generation != generation_.load(std::memory_order_acquire);
       },
       config_.max_tts_chunks);
+  };
 
-  const auto speak = [this, life, turn, active_turn_id,
+  const auto speak = [this, life, turn, active_turn_id, start_speech,
                       my_generation](std::string sentence) {
     if (!life->load(std::memory_order_acquire) ||
         my_generation != generation_.load(std::memory_order_acquire))
       return false;
     if (!turn->speech_started) {
+      {
+        std::lock_guard<std::mutex> lock(turn_mutex_);
+        if (my_generation != generation_.load(std::memory_order_acquire))
+          return false;
+        state_ = ConversationState::Speaking;
+      }
       turn->speech_started = true;
-      state_ = ConversationState::Speaking;
+      start_speech();
       if (events_) events_->publish(
           {EventType::SpeechStarted, session_id_, active_turn_id, 0, {}, {}, {}});
     }
@@ -228,8 +222,9 @@ void Conversation::on_transcript(std::string text, bool is_final,
           context.transition(TurnState::Synthesizing);
           for (auto& sentence : turn->segmenter.flush())
             if (!speak(std::move(sentence))) break;
-          turn->speech->finish();
-          if (!life->load(std::memory_order_acquire)) return;
+          if (turn->speech) turn->speech->finish();
+          if (!life->load(std::memory_order_acquire) ||
+              my_generation != generation_.load(std::memory_order_acquire)) return;
           if (events_) {
             events_->publish(
                 {EventType::SpeechCompleted, session_id_, active_turn_id,
@@ -238,24 +233,34 @@ void Conversation::on_transcript(std::string text, bool is_final,
                 {EventType::ConversationTurnCompleted, session_id_, active_turn_id,
                  0, {}, {}, {}});
           }
-          if (my_generation == generation_.load(std::memory_order_acquire))
+          std::lock_guard<std::mutex> lock(turn_mutex_);
+          if (my_generation == generation_.load(std::memory_order_acquire) &&
+              turn_id_ == active_turn_id) {
             state_ = ConversationState::Listening;
-          std::lock_guard<std::mutex> lock(turn_mutex_);
-          if (turn_id_ == active_turn_id) turn_id_.clear();
+            turn_id_.clear();
+          }
         },
-        [this, life, turn, active_turn_id](const TurnContext&,
-                                           std::exception_ptr) {
-          turn->speech->cancel();
+        [this, life, turn, active_turn_id, my_generation](const TurnContext&,
+                                                          std::exception_ptr) {
+          if (turn->speech) {
+            turn->speech->cancel();
+            // Quiesce this response's TTS before the shared provider is reused
+            // by the next executor task. Preserve the original failure.
+            try { turn->speech->finish(); } catch (...) {}
+          }
           if (!life->load(std::memory_order_acquire)) return;
-          state_ = ConversationState::Listening;
           std::lock_guard<std::mutex> lock(turn_mutex_);
-          if (turn_id_ == active_turn_id) turn_id_.clear();
+          if (my_generation == generation_.load(std::memory_order_acquire) &&
+              turn_id_ == active_turn_id) {
+            state_ = ConversationState::Listening;
+            turn_id_.clear();
+          }
         },
         std::move(options));
     std::lock_guard<std::mutex> lock(handles_mutex_);
     active_turns_.push_back(handle.result);
   } catch (const ExecutorOverloaded& e) {
-    turn->speech->cancel();
+    submit.unlock();
     state_ = ConversationState::Listening;
     {
       std::lock_guard<std::mutex> lock(turn_mutex_);

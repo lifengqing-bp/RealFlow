@@ -51,3 +51,8 @@ add_executable(runtime_manager_demo apps/runtime_manager_demo.cpp)
 target_link_libraries(runtime_manager_demo PRIVATE byteturn)
 add_test(NAME runtime_manager_demo COMMAND runtime_manager_demo)
 set_tests_properties(runtime_manager_demo PROPERTIES TIMEOUT 30)
+
+add_executable(interaction_control_tests tests/interaction_control_tests.cpp)
+target_link_libraries(interaction_control_tests PRIVATE byteturn)
+add_test(NAME interaction_control_tests COMMAND interaction_control_tests)
+set_tests_properties(interaction_control_tests PROPERTIES TIMEOUT 60)

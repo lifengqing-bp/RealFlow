@@ -111,6 +111,9 @@ class RuntimeManager {
   // Explicit fatal report; ordinary Error observations do not call this.
   RemoveStatus fail(const SessionHandle& handle);
   bool push_audio(const SessionHandle& handle, AudioFrame frame);
+  // Uses the same incarnation/admission checks as input; does not retire the
+  // session. True means requested, not stopped or rolled back externally.
+  bool cancel_response(const SessionHandle& handle);
   // True means the legacy hook was forwarded, not that a typed command was
   // accepted. Use observe() for explicit timeline admission results.
   bool handle_event(const SessionHandle& handle, Event event);

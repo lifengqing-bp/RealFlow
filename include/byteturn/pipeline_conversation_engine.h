@@ -4,7 +4,6 @@
 #include "byteturn/conversation_engine.h"
 
 #include <memory>
-#include <mutex>
 
 namespace byteturn {
 
@@ -20,6 +19,7 @@ class PipelineConversationEngine final : public ConversationEngine {
 
   void start(ConversationEngineContext context) override;
   bool push_audio(AudioFrame frame) override;
+  bool cancel_response() override;
   void handle_event(const Event& event) override;
   void stop() override;
 
@@ -40,9 +40,6 @@ class PipelineConversationEngine final : public ConversationEngine {
   std::unique_ptr<Conversation> conversation_;
   EventBus bridge_bus_;
   EventBus::Subscription bridge_subscription_ = 0;
-
-  mutable std::mutex state_mutex_;
-  ConversationStateSnapshot state_;
 };
 
 }  // namespace byteturn
