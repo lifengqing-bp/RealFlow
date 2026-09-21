@@ -86,6 +86,7 @@ std::string Agent::run_streaming(std::string user_text, std::string session_id,
       turn = llm_.stream(
           history_,
           [&](const std::string& delta) {
+            if (cancelled && cancelled()) return false;
             if (delta.empty()) return true;
             if (!received_first_token) {
               received_first_token = true;

@@ -110,6 +110,11 @@ bool ConversationSession::push_audio(AudioFrame frame) {
   return operation && engine_->push_audio(std::move(frame));
 }
 
+bool ConversationSession::cancel_response() {
+  Operation operation(*this);
+  return operation && engine_->cancel_response();
+}
+
 TimelineAppendResult ConversationSession::observe(Event event) {
   Operation operation(*this);
   if (!operation) return {};

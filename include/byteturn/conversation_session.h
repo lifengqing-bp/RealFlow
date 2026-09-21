@@ -32,11 +32,14 @@ class ConversationSession {
   // cleanup; neither a failed nor stopped session can restart.
   void start();
   bool push_audio(AudioFrame frame);
+  // Explicit response cancellation. Does not stop the session or ASR input.
+  // False when not Running or unsupported by the engine.
+  bool cancel_response();
 
   // Observation-only ingress: never asks an engine to perform an action.
   TimelineAppendResult observe(Event event);
   // Compatibility ingress. Normalizes/validates before forwarding to the
-  // legacy engine hook. Typed commands are a subsequent adapter milestone.
+  // legacy engine hook. Use cancel_response() for explicit cancellation.
   void handle_event(Event event);
 
   void request_stop() noexcept;  // Safe, non-waiting request from any callback.

@@ -1,4 +1,4 @@
-.PHONY: all test test-foundation test-runtime clean
+.PHONY: all test test-foundation test-runtime test-interaction clean
 CXX ?= c++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Wpedantic -O2 -pthread -Iinclude
 SOURCES := src/runtime_manager.cpp src/agent.cpp src/conversation.cpp src/conversation_session.cpp src/event.cpp src/event_timeline.cpp src/executor.cpp src/full_duplex_conversation.cpp src/pipeline_conversation_engine.cpp src/openai_compatible.cpp src/session.cpp src/observability.cpp src/curl_transport.cpp src/sentence_segmenter.cpp src/incremental_tts.cpp src/turn_context.cpp
@@ -32,10 +32,17 @@ build/runtime_manager_demo: $(FOUNDATION_SOURCES) src/runtime_manager.cpp apps/r
 test-runtime: build/runtime_manager_tests
 	./build/runtime_manager_tests
 
-test: build/byteturn_tests build/runtime_foundation_tests build/runtime_manager_tests
+build/interaction_control_tests: $(SOURCES) tests/interaction_control_tests.cpp $(HEADERS) | build
+	$(CXX) $(CXXFLAGS) $(filter %.cpp,$^) -o $@ $(LDLIBS)
+
+test-interaction: build/interaction_control_tests
+	./build/interaction_control_tests
+
+test: build/byteturn_tests build/runtime_foundation_tests build/runtime_manager_tests build/interaction_control_tests
 	./build/byteturn_tests
 	./build/runtime_foundation_tests
 	./build/runtime_manager_tests
+	./build/interaction_control_tests
 
 clean:
 	rm -rf build

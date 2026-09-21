@@ -471,6 +471,12 @@ bool RuntimeManager::push_audio(const SessionHandle& handle, AudioFrame frame) {
   try { return op.entry->session->push_audio(std::move(frame)); }
   catch (...) { impl_->remove(handle, SessionOutcome::EngineFailure); return false; }
 }
+bool RuntimeManager::cancel_response(const SessionHandle& handle) {
+  Impl::Operation op(*impl_, handle);
+  if (!op.entry) return false;
+  try { return op.entry->session->cancel_response(); }
+  catch (...) { impl_->remove(handle, SessionOutcome::EngineFailure); return false; }
+}
 bool RuntimeManager::handle_event(const SessionHandle& handle, Event event) {
   Impl::Operation op(*impl_, handle);
   if (!op.entry) return false;

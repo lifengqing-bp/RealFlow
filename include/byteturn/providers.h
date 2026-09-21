@@ -49,6 +49,8 @@ class TtsProvider {
     synthesize(text, on_audio);
   }
   virtual void end_utterance() {}
+  // Thread-safe, non-waiting cancellation request. Do not join or invoke
+  // application callbacks here: the runtime drains synthesis separately.
   virtual void cancel() = 0;
 };
 
