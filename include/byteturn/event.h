@@ -43,7 +43,12 @@ enum class EventType {
   // Generic session lifetime, distinct from a provider connection lifetime.
   SessionStarted,
   SessionStopped,
-  SessionFailed
+  SessionFailed,
+  // Requests and observed outcomes are different facts.
+  ResponseCancelRequested,
+  TurnFailed,
+  ConversationTurnCancelled,
+  ConversationTurnFailed
 };
 
 struct Event {

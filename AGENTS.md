@@ -48,3 +48,11 @@ Run `make test` for every change. Run the CLI smoke test when changing the agent
 loop. CMake is the canonical integration build; the Makefile is the zero-setup
 developer path.
 
+Observable behavior is part of the test contract, not just debugging output.
+Assert event identity, required causal order, terminal outcomes, metric counts and
+resource/loss counters alongside inputs and outputs. Use controlled timestamps for
+exact latency arithmetic and synchronization gates for concurrent interactions;
+do not infer readiness from sleeps or require unrelated threads to interleave alike.
+Drain producers and notifications before assertions, check trace completeness, and
+never turn a missing endpoint into a zero-duration sample. See
+[the observability contract](docs/observability.md).

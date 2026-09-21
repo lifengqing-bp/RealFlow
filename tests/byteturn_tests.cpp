@@ -438,7 +438,11 @@ void test_observability() {
                   start + std::chrono::milliseconds(7), "0", {}});
   events.publish({EventType::ModelCompleted, "s", "t", 0,
                   start + std::chrono::milliseconds(30), "0", {}});
+  events.publish({EventType::TurnCompleted, "s", "t", 0,
+                  start + std::chrono::milliseconds(30), {}, "private reply"});
   events.publish({EventType::SpeechStarted, "s", "t", 0,
+                  start + std::chrono::milliseconds(35), {}, {}});
+  events.publish({EventType::TtsChunkStarted, "s", "t", 0,
                   start + std::chrono::milliseconds(35), {}, {}});
   events.publish({EventType::FirstAudio, "s", "t", 0,
                   start + std::chrono::milliseconds(50), {}, {}});
@@ -446,12 +450,10 @@ void test_observability() {
                   start + std::chrono::milliseconds(90), {}, {}});
   events.publish({EventType::ConversationTurnCompleted, "s", "t", 0,
                   start + std::chrono::milliseconds(90), {}, {}});
-  events.publish({EventType::TurnCompleted, "s", "t", 0,
-                  start + std::chrono::milliseconds(12), {}, "private reply"});
   require(metrics.counter("byteturn_events_turn_started_total") == 1,
           "event counter");
   const auto histogram = metrics.histogram("byteturn_turn_duration_ms");
-  require(histogram.count == 1 && histogram.sum >= 12.0,
+  require(histogram.count == 1 && histogram.sum == 30.0,
           "turn latency histogram");
   require(metrics.prometheus_text().find("byteturn_turn_duration_ms_count 1") !=
               std::string::npos,

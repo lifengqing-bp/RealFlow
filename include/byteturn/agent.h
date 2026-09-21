@@ -19,11 +19,14 @@ class Agent {
   std::string run(std::string user_text, std::string session_id,
                   std::string turn_id,
                   std::function<bool()> cancelled = {});
+  // A non-null invocation bus replaces the default for this call only; it
+  // must outlive the call. No mutable global routing and no duplicate fan-out.
   std::string run_streaming(std::string user_text, std::string session_id,
                             std::string turn_id,
                             LlmProvider::TextDeltaSink on_text_delta,
                             std::function<bool()> cancelled = {},
-                            std::string trace_id = {});
+                            std::string trace_id = {},
+                            EventBus* invocation_events = nullptr);
   const std::vector<Message>& history() const { return history_; }
 
  private:

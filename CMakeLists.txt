@@ -56,3 +56,8 @@ add_executable(interaction_control_tests tests/interaction_control_tests.cpp)
 target_link_libraries(interaction_control_tests PRIVATE byteturn)
 add_test(NAME interaction_control_tests COMMAND interaction_control_tests)
 set_tests_properties(interaction_control_tests PROPERTIES TIMEOUT 60)
+
+add_executable(observability_contract_tests tests/observability_contract_tests.cpp)
+target_link_libraries(observability_contract_tests PRIVATE byteturn)
+add_test(NAME observability_contract_tests COMMAND observability_contract_tests)
+set_tests_properties(observability_contract_tests PROPERTIES TIMEOUT 60)

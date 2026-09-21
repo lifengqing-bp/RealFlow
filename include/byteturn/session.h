@@ -20,11 +20,13 @@ class AsyncSession {
                EventBus* events = nullptr);
 
   TurnHandle submit(std::string user_text, TurnOptions options = {});
+  // A per-invocation bus must outlive the returned future and its callbacks.
   TurnHandle submit_streaming(std::string user_text,
                               LlmProvider::TextDeltaSink on_text_delta,
                               Completion on_completed = {},
                               Failure on_failed = {},
-                              TurnOptions options = {});
+                              TurnOptions options = {},
+                              EventBus* invocation_events = nullptr);
   void cancel();
   const std::string& id() const { return session_id_; }
 

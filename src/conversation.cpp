@@ -88,23 +88,24 @@ bool Conversation::push_audio(const AudioFrame& frame) {
 }
 
 void Conversation::interrupt() {
-  std::string turn_id;
+  // Record receipt before signalling workers; never call subscribers under a
+  // control lock. This request is session-scoped, not a terminal outcome.
+  if (events_) events_->publish(
+      {EventType::ResponseCancelRequested, session_id_, {}, 0, {},
+       "all_responses", {}});
   {
     std::lock_guard<std::mutex> submit(submission_mutex_);
     {
       std::lock_guard<std::mutex> lock(turn_mutex_);
       ++generation_;
       state_ = ConversationState::Listening;
-      turn_id.swap(turn_id_);
+      turn_id_.clear();
     }
     session_.cancel();
     tts_.cancel();
   }
   // Input may already contain the correction. Neither clear its queue nor
   // reset the recognizer; response cancellation is not input cancellation.
-  if (events_) events_->publish(
-      {EventType::TurnCancelled, session_id_, turn_id, 0, {},
-       "response_cancelled", {}});
 }
 
 void Conversation::audio_loop() {
@@ -223,10 +224,12 @@ void Conversation::on_transcript(std::string text, bool is_final,
           for (auto& sentence : turn->segmenter.flush())
             if (!speak(std::move(sentence))) break;
           if (turn->speech) turn->speech->finish();
-          if (!life->load(std::memory_order_acquire) ||
-              my_generation != generation_.load(std::memory_order_acquire)) return;
+          if (context.stop_requested() ||
+              !life->load(std::memory_order_acquire) ||
+              my_generation != generation_.load(std::memory_order_acquire))
+            throw std::runtime_error("response cancelled or deadline exceeded");
           if (events_) {
-            events_->publish(
+            if (turn->speech_started) events_->publish(
                 {EventType::SpeechCompleted, session_id_, active_turn_id,
                  0, {}, {}, {}});
             events_->publish(
@@ -240,7 +243,7 @@ void Conversation::on_transcript(std::string text, bool is_final,
             turn_id_.clear();
           }
         },
-        [this, life, turn, active_turn_id, my_generation](const TurnContext&,
+        [this, life, turn, active_turn_id, my_generation](const TurnContext& context,
                                                           std::exception_ptr) {
           if (turn->speech) {
             turn->speech->cancel();
@@ -248,6 +251,14 @@ void Conversation::on_transcript(std::string text, bool is_final,
             // by the next executor task. Preserve the original failure.
             try { turn->speech->finish(); } catch (...) {}
           }
+          if (events_) events_->publish(
+              {context.expired() ? EventType::ConversationTurnFailed
+                   : context.cancelled() ||
+                     my_generation != generation_.load(std::memory_order_acquire)
+                       ? EventType::ConversationTurnCancelled
+                       : EventType::ConversationTurnFailed,
+               session_id_, active_turn_id, 0, {},
+               context.expired() ? "deadline" : "response_terminated", {}});
           if (!life->load(std::memory_order_acquire)) return;
           std::lock_guard<std::mutex> lock(turn_mutex_);
           if (my_generation == generation_.load(std::memory_order_acquire) &&
@@ -256,7 +267,7 @@ void Conversation::on_transcript(std::string text, bool is_final,
             turn_id_.clear();
           }
         },
-        std::move(options));
+        std::move(options), events_);
     std::lock_guard<std::mutex> lock(handles_mutex_);
     active_turns_.push_back(handle.result);
   } catch (const ExecutorOverloaded& e) {

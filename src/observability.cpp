@@ -4,8 +4,10 @@
 #include <cmath>
 #include <iomanip>
 #include <limits>
+#include <locale>
 #include <ostream>
 #include <sstream>
+#include <stdexcept>
 
 namespace byteturn {
 namespace {
@@ -30,6 +32,12 @@ std::string json_escape(const std::string& input) {
       case '\t': output += "\\t"; break;
       default:
         if (c >= 0x20) output.push_back(static_cast<char>(c));
+        else {
+          const char* hex = "0123456789abcdef";
+          output += "\\u00";
+          output.push_back(hex[c >> 4]);
+          output.push_back(hex[c & 15]);
+        }
     }
   }
   return output;
@@ -84,6 +92,7 @@ HistogramSnapshot MetricsRegistry::histogram(const std::string& name) const {
 std::string MetricsRegistry::prometheus_text() const {
   std::lock_guard<std::mutex> lock(mutex_);
   std::ostringstream out;
+  out.imbue(std::locale::classic());
   out << std::setprecision(12);
   for (const auto& entry : counters_) out << entry.first << ' ' << entry.second << '\n';
   for (const auto& entry : histograms_) {
@@ -101,132 +110,223 @@ std::string MetricsRegistry::prometheus_text() const {
   return out.str();
 }
 
-RuntimeObserver::RuntimeObserver(EventBus& events, MetricsRegistry& metrics)
-    : events_(events), metrics_(metrics),
-      subscription_(events_.subscribe([this](const Event& event) { on_event(event); })) {}
-
-RuntimeObserver::~RuntimeObserver() { events_.unsubscribe(subscription_); }
-
-std::string RuntimeObserver::key(const Event& event, const std::string& phase) {
-  return event.session_id + '\x1f' + event.turn_id + '\x1f' + phase + '\x1f' +
-         event.name;
+RuntimeObserver::RuntimeObserver(MetricsRegistry& metrics, std::size_t max_pending_spans)
+    : metrics_(metrics), max_pending_spans_(max_pending_spans) {
+  if (!max_pending_spans_) throw std::invalid_argument("observer span limit must be positive");
 }
-
-void RuntimeObserver::on_event(const Event& event) {
-  metrics_.increment(std::string("byteturn_events_") + event_type_name(event.type) +
-                     "_total");
-  const auto finish = [&](const std::string& phase, const std::string& metric) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = starts_.find(key(event, phase));
-    if (it == starts_.end()) return;
-    metrics_.observe(metric, elapsed_ms(it->second, event.timestamp));
-    starts_.erase(it);
-  };
-  if (event.type == EventType::TurnStarted || event.type == EventType::ModelStarted ||
-      event.type == EventType::ToolStarted) {
-    const char* phase = event.type == EventType::TurnStarted ? "turn" :
-                        event.type == EventType::ModelStarted ? "model" : "tool";
-    std::lock_guard<std::mutex> lock(mutex_);
-    starts_[key(event, phase)] = event.timestamp;
-    if (event.type == EventType::ModelStarted)
-      starts_[key(event, "first_token")] = event.timestamp;
-  } else if (event.type == EventType::AsrEndOfUtterance) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    starts_[key(event, "asr_final")] = event.timestamp;
-    starts_[key(event, "s2s_first_audio")] = event.timestamp;
-    starts_[key(event, "conversation_turn")] = event.timestamp;
-  } else if (event.type == EventType::InputSpeechEnded) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    starts_[key(event, "duplex_first_audio")] = event.timestamp;
-    starts_[key(event, "duplex_first_audible")] = event.timestamp;
-    starts_[key(event, "conversation_turn")] = event.timestamp;
-  } else if (event.type == EventType::TranscriptFinal) {
-    finish("asr_final", "byteturn_asr_final_latency_ms");
-  } else if (event.type == EventType::TurnCompleted) {
-    finish("turn", "byteturn_turn_duration_ms");
-  } else if (event.type == EventType::ModelCompleted) {
-    finish("model", "byteturn_model_duration_ms");
-  } else if (event.type == EventType::FirstToken) {
-    finish("first_token", "byteturn_time_to_first_token_ms");
-  } else if (event.type == EventType::SpeechStarted) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    starts_[key(event, "tts_first_audio")] = event.timestamp;
-    starts_[key(event, "tts_total")] = event.timestamp;
-  } else if (event.type == EventType::FirstAudio) {
-    finish("tts_first_audio", "byteturn_tts_first_audio_latency_ms");
-    finish("s2s_first_audio", "byteturn_s2s_first_audio_latency_ms");
-  } else if (event.type == EventType::AudioOutput) {
-    Event session_event = event;
-    session_event.turn_id.clear();
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = starts_.find(key(session_event, "duplex_first_audio"));
-    if (it != starts_.end()) {
-      metrics_.observe("byteturn_s2s_first_audio_latency_ms",
-                       elapsed_ms(it->second, event.timestamp));
-      starts_.erase(it);
-    }
-  } else if (event.type == EventType::PlaybackStarted) {
-    Event session_event = event;
-    session_event.turn_id.clear();
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto it = starts_.find(key(session_event, "duplex_first_audible"));
-    if (it != starts_.end()) {
-      metrics_.observe("byteturn_s2s_first_audible_latency_ms",
-                       elapsed_ms(it->second, event.timestamp));
-      starts_.erase(it);
-    }
-  } else if (event.type == EventType::BargeInDetected) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    starts_[key(event, "barge_in_stop")] = event.timestamp;
-  } else if (event.type == EventType::OutputCancelled) {
-    finish("barge_in_stop", "byteturn_barge_in_stop_latency_ms");
-  } else if (event.type == EventType::SpeechCompleted) {
-    finish("tts_total", "byteturn_tts_total_duration_ms");
-  } else if (event.type == EventType::ConversationTurnCompleted) {
-    Event session_event = event;
-    session_event.turn_id.clear();
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      const auto it = starts_.find(key(session_event, "conversation_turn"));
-      if (it != starts_.end()) {
-        metrics_.observe("byteturn_conversation_turn_duration_ms",
-                         elapsed_ms(it->second, event.timestamp));
-        starts_.erase(it);
-        return;
+RuntimeObserver::RuntimeObserver(EventBus& events, MetricsRegistry& metrics,
+                                 std::size_t max_pending_spans)
+    : RuntimeObserver(metrics, max_pending_spans) {
+  events_ = &events;
+  // Subscribe only after every member (especially the mutex/map) is initialized.
+  subscription_ = events.subscribe([this](const Event& e) { observe(e); });
+}
+RuntimeObserver::RuntimeObserver(EventTimeline& timeline, MetricsRegistry& metrics,
+                                 std::size_t max_pending_spans)
+    : RuntimeObserver(metrics, max_pending_spans) {
+  timeline_ = &timeline;
+  subscription_ = timeline.subscribe([this](const Event& e) { observe(e); });
+}
+RuntimeObserver::~RuntimeObserver() {
+  if (timeline_) timeline_->unsubscribe(subscription_);
+  if (events_) events_->unsubscribe(subscription_);
+}
+RuntimeObserver::Key RuntimeObserver::key(const Event& e, const std::string& phase,
+                                          bool operation) {
+  return {e.session_id, e.generation, e.turn_id, phase, operation ? e.name : ""};
+}
+std::size_t RuntimeObserver::pending_spans() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return starts_.size();
+}
+void RuntimeObserver::begin(const Event& e, const std::string& phase, bool operation) {
+  const auto k = key(e, phase, operation);
+  auto found = starts_.find(k);
+  if (found != starts_.end()) {
+    // Ambiguous duplicate starts must not silently replace the original time.
+    found->second = {};
+    metrics_.increment("byteturn_observer_duplicate_starts_total");
+    return;
+  }
+  if (starts_.size() >= max_pending_spans_) {
+    metrics_.increment("byteturn_observer_span_limit_rejections_total");
+    return;
+  }
+  starts_.emplace(k, e.timestamp);
+}
+bool RuntimeObserver::finish(const Event& e, const std::string& phase,
+                              const char* metric, bool operation, bool required) {
+  auto it = starts_.find(key(e, phase, operation));
+  if (it == starts_.end()) {
+    if (required) metrics_.increment("byteturn_observer_unmatched_endpoints_total");
+    return false;
+  }
+  const auto start = it->second;
+  starts_.erase(it);
+  if (start.time_since_epoch().count() == 0 ||
+      e.timestamp.time_since_epoch().count() == 0 || e.timestamp < start) {
+    metrics_.increment("byteturn_observer_invalid_intervals_total");
+  } else {
+    metrics_.observe(metric, elapsed_ms(start, e.timestamp));
+  }
+  return true;
+}
+void RuntimeObserver::discard(const Event& e, bool entire_session, bool agent_only) {
+  std::uint64_t count = 0;
+  for (auto it = starts_.begin(); it != starts_.end();) {
+    const auto& k = it->first;
+    const auto& phase = std::get<3>(k);
+    const bool agent = phase == "turn" || phase == "model" ||
+                       phase == "first_token" || phase == "tool";
+    if (std::get<0>(k) == e.session_id && std::get<1>(k) == e.generation &&
+        (entire_session || std::get<2>(k) == e.turn_id) && (!agent_only || agent)) {
+      it = starts_.erase(it);
+      ++count;
+    } else ++it;
+  }
+  if (count) metrics_.increment("byteturn_observer_discarded_spans_total", count);
+}
+void RuntimeObserver::observe(const Event& event) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  metrics_.increment(std::string("byteturn_events_") + event_type_name(event.type) + "_total");
+  switch (event.type) {
+    case EventType::TurnStarted:
+      begin(event, "turn");
+      break;
+    case EventType::ModelStarted:
+      begin(event, "model", true);
+      begin(event, "first_token", true);
+      break;
+    case EventType::ToolStarted:
+      begin(event, "tool", true);
+      break;
+    case EventType::AsrEndOfUtterance:
+      begin(event, "asr_final");
+      begin(event, "s2s_first_audio");
+      begin(event, "conversation_turn");
+      break;
+    case EventType::InputSpeechEnded:
+      // Legacy native path has one uncorrelated input in flight. Multiple
+      // speech ends invalidate the interval rather than choosing the latest.
+      begin(event, "duplex_first_audio");
+      begin(event, "duplex_first_audible");
+      begin(event, "conversation_turn");
+      break;
+    case EventType::TranscriptFinal:
+      finish(event, "asr_final", "byteturn_asr_final_latency_ms", false, false);
+      break;
+    case EventType::FirstToken:
+      finish(event, "first_token", "byteturn_time_to_first_token_ms", true);
+      break;
+    case EventType::ModelCompleted:
+      finish(event, "model", "byteturn_model_duration_ms", true);
+      // Tool-only model steps legitimately have no first text token.
+      starts_.erase(key(event, "first_token", true));
+      break;
+    case EventType::ToolCompleted:
+      finish(event, "tool", "byteturn_tool_duration_ms", true);
+      break;
+    case EventType::TurnCompleted:
+      finish(event, "turn", "byteturn_turn_duration_ms");
+      discard(event, false, true);  // Speech may still be running.
+      break;
+    case EventType::TurnCancelled:
+      metrics_.increment("byteturn_turns_cancelled_total");
+      discard(event, false, true);
+      break;
+    case EventType::TurnFailed:
+      metrics_.increment("byteturn_turns_failed_total");
+      discard(event, false, true);
+      break;
+    case EventType::TtsChunkStarted:
+      // First chunk submission, not generic/native SpeechStarted, is a TTS
+      // measurement endpoint. Subsequent chunks belong to the same utterance.
+      if (!starts_.count(key(event, "tts_total"))) {
+        begin(event, "tts_first_audio");
+        begin(event, "tts_total");
       }
+      break;
+    case EventType::FirstAudio:
+      finish(event, "tts_first_audio", "byteturn_tts_first_audio_latency_ms");
+      finish(event, "s2s_first_audio", "byteturn_s2s_first_audio_latency_ms", false, false);
+      break;
+    case EventType::AudioOutput:
+    case EventType::PlaybackStarted: {
+      Event input = event;
+      input.turn_id.clear();  // Current native provider has no input/response link.
+      const bool audio = event.type == EventType::AudioOutput;
+      const char* phase = audio ? "duplex_first_audio" : "duplex_first_audible";
+      const char* metric = audio ? "byteturn_s2s_first_audio_latency_ms"
+                                 : "byteturn_s2s_first_audible_latency_ms";
+      if (!finish(event, phase, metric, false, false) && !event.turn_id.empty())
+        finish(input, phase, metric, false, false);
+      break;
     }
-    finish("conversation_turn", "byteturn_conversation_turn_duration_ms");
-  } else if (event.type == EventType::ToolCompleted) {
-    finish("tool", "byteturn_tool_duration_ms");
-  } else if (event.type == EventType::Error) {
-    metrics_.increment("byteturn_errors_total");
-  } else if (event.type == EventType::TurnCancelled) {
-    metrics_.increment("byteturn_turns_cancelled_total");
+    case EventType::BargeInDetected:
+      begin(event, "barge_in_stop");
+      break;
+    case EventType::OutputCancelled:
+      finish(event, "barge_in_stop", "byteturn_barge_in_stop_latency_ms", false, false);
+      discard(event, false);
+      break;
+    case EventType::SpeechCompleted:
+      finish(event, "tts_total", "byteturn_tts_total_duration_ms", false, false);
+      break;
+    case EventType::ConversationTurnCompleted: {
+      if (!finish(event, "conversation_turn", "byteturn_conversation_turn_duration_ms",
+                  false, false) && !event.turn_id.empty()) {
+        Event input = event;
+        input.turn_id.clear();
+        finish(input, "conversation_turn", "byteturn_conversation_turn_duration_ms", false, false);
+      }
+      discard(event, false);
+      break;
+    }
+    case EventType::ConversationTurnCancelled:
+    case EventType::ConversationTurnFailed:
+      discard(event, false);
+      break;
+    case EventType::SessionStopped:
+    case EventType::SessionFailed:
+    case EventType::RealtimeSessionClosed:
+      discard(event, true);
+      break;
+    case EventType::Error:
+      metrics_.increment("byteturn_errors_total");
+      break;
+    default: break;
   }
 }
 
 JsonEventLogger::JsonEventLogger(EventBus& events, std::ostream& output,
                                  EventLogOptions options)
-    : events_(events), output_(output), options_(options),
-      subscription_(events_.subscribe([this](const Event& event) { write(event); })) {}
-
+    : events_(events), output_(output), options_(options), subscription_(0) {
+  subscription_ = events_.subscribe([this](const Event& event) { write(event); });
+}
 JsonEventLogger::~JsonEventLogger() { events_.unsubscribe(subscription_); }
 
+std::string event_json(const Event& event, EventLogOptions options) {
+  const auto ns = [](auto point) {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(point.time_since_epoch()).count();
+  };
+  std::ostringstream out;
+  out.imbue(std::locale::classic());
+  out << "{\"schema_version\":1,\"sequence\":" << event.sequence
+      << ",\"event\":\"" << event_type_name(event.type)
+      << "\",\"session_id\":\"" << json_escape(event.session_id)
+      << "\",\"generation\":" << event.generation
+      << ",\"turn_id\":\"" << json_escape(event.turn_id)
+      << "\",\"name\":\"" << json_escape(event.name)
+      << "\",\"trace_id\":\"" << json_escape(event.trace_id)
+      << "\",\"timestamp_ns\":" << ns(event.timestamp)
+      << ",\"received_at_ns\":" << ns(event.received_at);
+  if (options.include_payload) out << ",\"data\":\"" << json_escape(event.data) << '"';
+  out << '}';
+  return out.str();
+}
 void JsonEventLogger::write(const Event& event) {
   std::lock_guard<std::mutex> lock(mutex_);
-  output_ << "{\"sequence\":" << event.sequence << ",\"event\":\""
-          << event_type_name(event.type) << "\",\"session_id\":\""
-          << json_escape(event.session_id) << "\",\"turn_id\":\""
-          << json_escape(event.turn_id) << "\",\"name\":\""
-          << json_escape(event.name) << "\",\"trace_id\":\""
-          << json_escape(event.trace_id) << '"';
-  output_ << ",\"generation\":" << event.generation
-          << ",\"received_at_ns\":"
-          << std::chrono::duration_cast<std::chrono::nanoseconds>(
-                 event.received_at.time_since_epoch()).count();
-  if (options_.include_payload)
-    output_ << ",\"data\":\"" << json_escape(event.data) << '"';
-  output_ << "}\n";
+  output_ << event_json(event, options_) << '\n';
 }
 
 const char* event_type_name(EventType type) {
@@ -261,6 +361,10 @@ const char* event_type_name(EventType type) {
     case EventType::SessionStarted: return "session_started";
     case EventType::SessionStopped: return "session_stopped";
     case EventType::SessionFailed: return "session_failed";
+    case EventType::ResponseCancelRequested: return "response_cancel_requested";
+    case EventType::TurnFailed: return "turn_failed";
+    case EventType::ConversationTurnCancelled: return "conversation_turn_cancelled";
+    case EventType::ConversationTurnFailed: return "conversation_turn_failed";
   }
   return "unknown";
 }
