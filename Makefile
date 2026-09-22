@@ -1,12 +1,12 @@
 .PHONY: all test test-foundation test-runtime test-interaction test-observability clean
 CXX ?= c++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Wpedantic -O2 -pthread -Iinclude
-SOURCES := src/runtime_manager.cpp src/agent.cpp src/conversation.cpp src/conversation_session.cpp src/event.cpp src/event_timeline.cpp src/executor.cpp src/full_duplex_conversation.cpp src/pipeline_conversation_engine.cpp src/openai_compatible.cpp src/session.cpp src/observability.cpp src/curl_transport.cpp src/sentence_segmenter.cpp src/incremental_tts.cpp src/turn_context.cpp
+SOURCES := src/mock_providers.cpp src/runtime_manager.cpp src/agent.cpp src/conversation.cpp src/conversation_session.cpp src/event.cpp src/event_timeline.cpp src/executor.cpp src/full_duplex_conversation.cpp src/pipeline_conversation_engine.cpp src/openai_compatible.cpp src/session.cpp src/observability.cpp src/curl_transport.cpp src/sentence_segmenter.cpp src/incremental_tts.cpp src/turn_context.cpp
 HEADERS := $(wildcard include/byteturn/*.h)
 FOUNDATION_SOURCES := src/event.cpp src/event_timeline.cpp src/conversation_session.cpp
 LDLIBS := -lcurl
 
-all: build/byteturn_cli build/runtime_manager_demo
+all: build/byteturn_cli build/runtime_manager_demo build/mock_pipeline_demo
 
 build:
 	mkdir -p build
@@ -44,7 +44,18 @@ build/observability_contract_tests: $(SOURCES) tests/observability_contract_test
 test-observability: build/observability_contract_tests
 	./build/observability_contract_tests
 
-test: build/observability_contract_tests build/byteturn_tests build/runtime_foundation_tests build/runtime_manager_tests build/interaction_control_tests
+build/mock_provider_tests: $(SOURCES) tests/mock_provider_tests.cpp $(HEADERS) | build
+	$(CXX) $(CXXFLAGS) $(filter %.cpp,$^) -o $@ $(LDLIBS)
+
+build/mock_pipeline_demo: $(SOURCES) apps/mock_pipeline_demo.cpp $(HEADERS) | build
+	$(CXX) $(CXXFLAGS) $(filter %.cpp,$^) -o $@ $(LDLIBS)
+
+.PHONY: test-mocks
+test-mocks: build/mock_provider_tests build/mock_pipeline_demo
+	./build/mock_provider_tests
+	./build/mock_pipeline_demo
+
+test: test-mocks build/observability_contract_tests build/byteturn_tests build/runtime_foundation_tests build/runtime_manager_tests build/interaction_control_tests
 	./build/observability_contract_tests
 	./build/byteturn_tests
 	./build/runtime_foundation_tests

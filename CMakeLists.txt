@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(byteturn
+  src/mock_providers.cpp
   src/runtime_manager.cpp
   src/agent.cpp
   src/conversation.cpp
@@ -61,3 +62,11 @@ add_executable(observability_contract_tests tests/observability_contract_tests.c
 target_link_libraries(observability_contract_tests PRIVATE byteturn)
 add_test(NAME observability_contract_tests COMMAND observability_contract_tests)
 set_tests_properties(observability_contract_tests PROPERTIES TIMEOUT 60)
+
+add_executable(mock_provider_tests tests/mock_provider_tests.cpp)
+target_link_libraries(mock_provider_tests PRIVATE byteturn)
+add_test(NAME mock_provider_tests COMMAND mock_provider_tests)
+add_executable(mock_pipeline_demo apps/mock_pipeline_demo.cpp)
+target_link_libraries(mock_pipeline_demo PRIVATE byteturn)
+add_test(NAME mock_pipeline_demo COMMAND mock_pipeline_demo)
+set_tests_properties(mock_provider_tests mock_pipeline_demo PROPERTIES TIMEOUT 30)

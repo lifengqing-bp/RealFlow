@@ -60,6 +60,48 @@ integration layer.
 
 ## Runtime APIs
 
+### Offline mock providers
+
+Include `byteturn/mock_providers.h` to inject reusable `MockAsrProvider`,
+`MockLlmProvider`, and `MockTtsProvider` through the existing provider interfaces.
+No credentials, network calls, sleeps, or additional worker threads are needed.
+The normal build still links libcurl for the production transport.
+
+```sh
+make test-mocks
+./build/mock_pipeline_demo
+```
+
+The demo runs the actual session/pipeline, ASR ingress, agent streaming, sentence
+segmentation and incremental TTS, then verifies completion and metric endpoints.
+Its PCM is silence, not intelligible speech; its timings are not provider benchmarks.
+
+```cpp
+byteturn::MockAsrProvider asr({{{"Hel"}, "Hello."}});
+byteturn::MockLlmProvider llm({{{"Hello ", "from RealFlow."}, {}}});
+byteturn::MockTtsProvider tts; // One 160-sample, 16 kHz mono silence frame/chunk.
+```
+
+- ASR: nonempty input frames advance scripted partials; an `end_of_utterance`
+  frame emits the final and advances to the next utterance, even with empty PCM.
+  Exhaustion is silent; `reset()` rewinds the script, not a callback-drain barrier.
+- LLM: each call consumes one scripted reply, with ordered text deltas and optional
+  structured tool calls. History is ignored; exhaustion throws. Pre-cancellation
+  consumes nothing; cancellation after selection, sink rejection or callback failure
+  consumes that reply and throws. Complete and streaming share this behavior.
+- TTS: supplied owned PCM frames replay for each nonempty text chunk. Empty frame
+  lists emit nothing; malformed PCM metadata/interleaving is rejected. A false sink
+  return stops delivery. `cancel()` is thread-safe and cooperative; incremental
+  chunks remain cancelled until `begin_utterance()`. Standalone `synthesize()` starts
+  a new utterance. Serialize begin/synthesis/end; cancellation may race them, and
+  an already-entered callback may finish.
+
+Scripts are finite, constructor-owned fixtures with no retained input history or
+growing request logs. Callbacks are synchronous and never retained. Keep providers
+alive until their calling session has fully stopped; normally use one set per session.
+
+### Core APIs
+
 - `SessionExecutor` runs turns asynchronously: turns in one session are FIFO
   and never overlap, while independent sessions can use separate workers. Both
   global and per-session pending queues are bounded.
