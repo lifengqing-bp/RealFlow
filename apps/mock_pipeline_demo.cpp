@@ -1,4 +1,7 @@
 #include "byteturn/mock_providers.h"
+#ifdef REALFLOW_WEBSOCKET_MOCK
+#include "byteturn/websocket_mock_providers.h"
+#endif
 #include "byteturn/pipeline_conversation_engine.h"
 #include "byteturn/conversation_session.h"
 #include "byteturn/observability.h"
@@ -9,13 +12,28 @@
 #include <iostream>
 #include <mutex>
 
-int main() {
+int main(int argc, char** argv) {
   using namespace byteturn;
   using namespace std::chrono_literals;
   // Dependencies precede the session: all callbacks drain before these die.
+#ifdef REALFLOW_WEBSOCKET_MOCK
+  WebSocketMockConfig config;
+  if (argc > 1) {
+    const int port = std::stoi(argv[1]);
+    if (port < 1 || port > 65535) return 1;
+    config.port = static_cast<std::uint16_t>(port);
+  }
+  WebSocketMockAsr asr(config);
+  WebSocketMockLlm llm(config);
+  WebSocketMockTts tts(config);
+  const std::size_t expected_samples = 320;
+#else
+  (void)argc; (void)argv;
   MockAsrProvider asr({{{"Hel"}, "Hello."}});
   MockLlmProvider llm({{{"Hello ", "from RealFlow."}, {}}});
   MockTtsProvider tts;
+  const std::size_t expected_samples = 160;
+#endif
   ToolRegistry tools;
   Agent agent(llm, tools);
   SessionExecutor executor(1);
@@ -70,13 +88,13 @@ int main() {
   }
   // These metrics are pipeline endpoint checks, not real-provider benchmarks.
   const bool ok = ready && completed && !failed && ordered && identity &&
-      finals == 1 && samples == 160 &&
+      finals == 1 && samples == expected_samples &&
       metrics.histogram("byteturn_asr_final_latency_ms").count == 1 &&
       metrics.histogram("byteturn_time_to_first_token_ms").count == 1 &&
       metrics.histogram("byteturn_tts_first_audio_latency_ms").count == 1 &&
       metrics.histogram("byteturn_conversation_turn_duration_ms").count == 1 &&
       session.timeline().stats().dropped_notifications == 0;
-  std::cout << "Offline mock pipeline: finals=" << finals << " samples=" << samples
+  std::cout << "Mock pipeline: finals=" << finals << " samples=" << samples
             << " completed=" << completed << " verified=" << ok << '\n';
   return ok ? 0 : 1;
 }

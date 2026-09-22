@@ -102,6 +102,11 @@ alive until their calling session has fully stopped; normally use one set per se
 
 ### Core APIs
 
+For **Level 2 mocks over real WebSocket connections**, see
+[the WebSocket mock guide](docs/websocket-mocks.md). The optional C++ adapters call
+a separate local Python supplier process through `/asr`, `/llm`, and `/tts`.
+The normal build and in-process mocks do not require these dependencies.
+
 - `SessionExecutor` runs turns asynchronously: turns in one session are FIFO
   and never overlap, while independent sessions can use separate workers. Both
   global and per-session pending queues are bounded.
