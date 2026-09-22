@@ -1,0 +1,45 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+      - name: Capture reproducible source snapshot
+        run: |
+          mkdir -p test-results
+          git rev-parse HEAD > test-results/revision.txt
+          git archive --format=tar HEAD > test-results/source.tar
+      - name: CMake build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build --parallel 2
+      - name: CTest
+        run: ctest --test-dir build --output-on-failure --output-junit "$GITHUB_WORKSPACE/test-results/ctest.xml"
+      - name: Make tests
+        run: make test
+      - name: Test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-evidence-linux
+          path: |
+            test-results/
+            build/Testing/Temporary/LastTest.log
+          retention-days: 7
