@@ -2,6 +2,7 @@ name: Tests
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -13,14 +14,28 @@ concurrency:
 
 jobs:
   linux:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gcc
+            compiler: g++
+            flags: ""
+          - name: clang-asan-ubsan
+            compiler: clang++
+            flags: "-fsanitize=address,undefined -fno-omit-frame-pointer"
+    env:
+      ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev clang
       - name: Capture reproducible source snapshot
         run: |
           mkdir -p test-results
@@ -28,18 +43,29 @@ jobs:
           git archive --format=tar HEAD > test-results/source.tar
       - name: CMake build
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-          cmake --build build --parallel 2
+          cmake -S . -B build/cmake -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
+            "-DCMAKE_CXX_FLAGS=${{ matrix.flags }}" \
+            "-DCMAKE_EXE_LINKER_FLAGS=${{ matrix.flags }}"
+          cmake --build build/cmake --parallel 2
       - name: CTest
-        run: ctest --test-dir build --output-on-failure --output-junit "$GITHUB_WORKSPACE/test-results/ctest.xml"
+        run: ctest --test-dir build/cmake --output-on-failure --parallel 2 --output-junit "$GITHUB_WORKSPACE/test-results/ctest.xml"
+      - name: Repeat regression suites
+        if: matrix.name == 'gcc'
+        run: |
+          set -o pipefail
+          ctest --test-dir build/cmake --output-on-failure --repeat until-fail:10 \
+            -R 'component_unit_tests|conversation_integration_tests|http_transport_integration_tests|runtime_foundation_tests|runtime_manager_tests|interaction_control_tests' \
+            | tee test-results/repeated-tests.log
       - name: Make tests
+        if: matrix.name == 'gcc'
         run: make test
       - name: Test evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-evidence-linux
+          name: test-evidence-${{ matrix.name }}
           path: |
             test-results/
-            build/Testing/Temporary/LastTest.log
+            build/cmake/Testing/Temporary/LastTest.log
           retention-days: 7

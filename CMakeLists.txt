@@ -61,3 +61,35 @@ add_executable(observability_contract_tests tests/observability_contract_tests.c
 target_link_libraries(observability_contract_tests PRIVATE byteturn)
 add_test(NAME observability_contract_tests COMMAND observability_contract_tests)
 set_tests_properties(observability_contract_tests PROPERTIES TIMEOUT 60)
+
+# Fast component checks and cross-component runtime/protocol integration.
+add_executable(component_unit_tests tests/component_unit_tests.cpp)
+target_link_libraries(component_unit_tests PRIVATE byteturn)
+target_compile_options(component_unit_tests PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME component_unit_tests COMMAND component_unit_tests)
+set_tests_properties(component_unit_tests PROPERTIES LABELS "unit" TIMEOUT 60)
+
+add_executable(conversation_integration_tests tests/conversation_integration_tests.cpp)
+target_link_libraries(conversation_integration_tests PRIVATE byteturn)
+target_compile_options(conversation_integration_tests PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME conversation_integration_tests COMMAND conversation_integration_tests)
+set_tests_properties(conversation_integration_tests PROPERTIES LABELS "integration" TIMEOUT 90)
+
+option(REALFLOW_ENABLE_HTTP_TESTS "Run loopback HTTP integration tests (requires Python 3.9+)" ON)
+if(REALFLOW_ENABLE_HTTP_TESTS)
+  find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
+  add_executable(http_transport_integration_tests tests/http_transport_integration_tests.cpp)
+  target_link_libraries(http_transport_integration_tests PRIVATE byteturn)
+  target_compile_options(http_transport_integration_tests PRIVATE -Wall -Wextra -Wpedantic)
+  add_test(NAME http_transport_integration_tests
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/http_fixture.py
+            $<TARGET_FILE:http_transport_integration_tests>)
+  set_tests_properties(http_transport_integration_tests PROPERTIES LABELS "integration;http" TIMEOUT 90)
+endif()
+
+set_tests_properties(runtime_foundation_tests runtime_manager_tests
+  PROPERTIES LABELS "unit;concurrency")
+set_tests_properties(interaction_control_tests observability_contract_tests
+  PROPERTIES LABELS "integration;concurrency")
+set_tests_properties(byteturn_tests PROPERTIES LABELS "regression")
+set_tests_properties(runtime_manager_demo PROPERTIES LABELS "smoke")

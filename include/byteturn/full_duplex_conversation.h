@@ -82,7 +82,9 @@ class FullDuplexConversation {
   std::string response_id_;
   std::uint64_t delivered_samples_ = 0;
   std::uint64_t played_samples_ = 0;
+  // Active until generation AND acknowledged playback have both finished.
   bool response_active_ = false;
+  bool response_generation_done_ = false;
   bool playback_started_ = false;
   bool input_speech_active_ = false;
   std::atomic<bool> stopping_{false};

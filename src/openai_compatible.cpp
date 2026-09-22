@@ -397,6 +397,8 @@ LlmTurn OpenAiCompatibleLlm::stream(
   LlmTurn result;
   bool done = false;
   SseParser parser([&](const std::string& event) {
+    // The terminal marker fences every later payload, including tool calls.
+    if (done) return;
     if (event == "[DONE]") {
       done = true;
       return;
