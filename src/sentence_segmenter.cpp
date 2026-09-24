@@ -15,6 +15,19 @@ std::string trim(std::string text) {
   }).base();
   return first < last ? std::string(first, last) : std::string{};
 }
+// Text deltas may end partway through a UTF-8 codepoint. Do not count that
+// suffix toward a split threshold until its remaining bytes arrive.
+std::size_t complete_utf8_prefix(const std::string& text) {
+  if (text.empty()) return 0;
+  std::size_t start = text.size() - 1;
+  while (start && (static_cast<unsigned char>(text[start]) & 0xc0) == 0x80)
+    --start;
+  const auto lead = static_cast<unsigned char>(text[start]);
+  const std::size_t width = lead < 0x80 ? 1 :
+      ((lead & 0xe0) == 0xc0 ? 2 : ((lead & 0xf0) == 0xe0 ? 3 :
+      ((lead & 0xf8) == 0xf0 ? 4 : 1)));
+  return text.size() - start < width ? start : text.size();
+}
 bool starts_at(const std::string& value, std::size_t position, const char* token) {
   return value.compare(position, std::char_traits<char>::length(token), token) == 0;
 }
@@ -45,9 +58,12 @@ std::size_t SentenceSegmenter::character_count(std::size_t bytes) const {
 std::vector<std::string> SentenceSegmenter::extract(bool flushing) {
   std::vector<std::string> output;
   while (!buffer_.empty()) {
+    const auto complete_bytes = complete_utf8_prefix(buffer_);
+    if (flushing && complete_bytes != buffer_.size())
+      throw std::invalid_argument("incomplete UTF-8 at end of text stream");
     std::size_t boundary = std::string::npos;
     std::size_t soft_boundary = std::string::npos;
-    for (std::size_t i = 0; i < buffer_.size(); ++i) {
+    for (std::size_t i = 0; i < complete_bytes; ++i) {
       std::size_t punctuation_bytes = 0;
       bool strong = false;
       if (buffer_[i] == '!' || buffer_[i] == '?' || buffer_[i] == '\n') {
@@ -77,14 +93,18 @@ std::vector<std::string> SentenceSegmenter::extract(bool flushing) {
     }
     if (boundary == std::string::npos) boundary = soft_boundary;
     if (boundary == std::string::npos &&
-        character_count(buffer_.size()) >= config_.hard_max_characters) {
+        character_count(complete_bytes) >= config_.hard_max_characters) {
       std::size_t characters = 0;
       std::size_t last_space = std::string::npos;
-      for (std::size_t i = 0; i < buffer_.size(); ++i) {
+      for (std::size_t i = 0; i < complete_bytes; ++i) {
         if ((static_cast<unsigned char>(buffer_[i]) & 0xc0) != 0x80) ++characters;
         if (std::isspace(static_cast<unsigned char>(buffer_[i]))) last_space = i + 1;
         if (characters >= config_.target_characters) {
           boundary = last_space == std::string::npos ? i + 1 : last_space;
+          // i indexes a leading byte, not necessarily a one-byte character.
+          while (boundary < complete_bytes &&
+                 (static_cast<unsigned char>(buffer_[boundary]) & 0xc0) == 0x80)
+            ++boundary;
           break;
         }
       }
