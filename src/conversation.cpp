@@ -129,10 +129,21 @@ void Conversation::audio_loop() {
           {EventType::AsrEndOfUtterance, session_id_, input_turn_id, 0, {}, {}, {}});
     }
     // ASR callbacks belong to input, not the generation being cancelled.
-    asr_.push(frame, [this, life, input_turn_id](std::string text, bool final) {
-      if (!life->load(std::memory_order_acquire)) return;
-      on_transcript(std::move(text), final, input_turn_id);
-    });
+    try {
+      asr_.push(frame, [this, life, input_turn_id](std::string text, bool final) {
+        if (!life->load(std::memory_order_acquire)) return;
+        on_transcript(std::move(text), final, input_turn_id);
+      });
+    } catch (...) {
+      // Provider I/O failure must not escape the audio worker and terminate the
+      // process. Keep input available for a later request/reconnect. Do not log
+      // provider exception text, which may contain payloads or credentials.
+      if (life->load(std::memory_order_acquire) && events_) {
+        try { events_->publish({EventType::Error, session_id_, input_turn_id,
+                               0, {}, "asr", "ASR input failed"}); }
+        catch (...) {} // Observation failure cannot terminate the worker either.
+      }
+    }
   }
 }
 
