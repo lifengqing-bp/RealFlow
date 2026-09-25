@@ -83,3 +83,15 @@ test: build/component_unit_tests build/conversation_integration_tests build/http
 
 clean:
 	rm -rf build
+
+# Optional provider: set JSON_INCLUDE_DIR to the parent of nlohmann/json.hpp.
+JSON_INCLUDE_DIR ?= /usr/include
+.PHONY: test-byteplus
+build/byteplus_tts_tests: src/byteplus_tts.cpp tests/byteplus_tts_tests.cpp $(HEADERS) | build
+	$(CXX) $(CXXFLAGS) -isystem $(JSON_INCLUDE_DIR) $(filter %.cpp,$^) -o $@
+
+build/byteplus_tts_demo: src/byteplus_tts.cpp src/curl_transport.cpp src/observability.cpp src/event.cpp src/event_timeline.cpp apps/byteplus_tts_demo.cpp $(HEADERS) | build
+	$(CXX) $(CXXFLAGS) -isystem $(JSON_INCLUDE_DIR) $(filter %.cpp,$^) -o $@ $(LDLIBS)
+
+test-byteplus: build/byteplus_tts_tests
+	./build/byteplus_tts_tests
