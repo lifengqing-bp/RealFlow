@@ -35,7 +35,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev clang
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev nlohmann-json3-dev clang
       - name: Capture reproducible source snapshot
         run: |
           mkdir -p test-results
@@ -43,7 +43,7 @@ jobs:
           git archive --format=tar HEAD > test-results/source.tar
       - name: CMake build
         run: |
-          cmake -S . -B build/cmake -DCMAKE_BUILD_TYPE=Debug \
+          cmake -S . -B build/cmake -DCMAKE_BUILD_TYPE=Debug -DREALFLOW_BYTEPLUS=ON \
             -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
             "-DCMAKE_CXX_FLAGS=${{ matrix.flags }}" \
             "-DCMAKE_EXE_LINKER_FLAGS=${{ matrix.flags }}"

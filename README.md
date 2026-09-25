@@ -188,3 +188,9 @@ the pre-turn checkpoint.
 ## License
 
 Apache-2.0. See `LICENSE`.
+
+### BytePlus TTS
+
+For **BytePlus HTTP streaming TTS**, see [the BytePlus speech guide](docs/byteplus-speech.md).
+The optional adapter streams PCM through the existing TTS interface; ASR support
+is pending protocol verification. Live supplier validation is still required.
