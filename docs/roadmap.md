@@ -6,9 +6,12 @@ Make continuous human interaction independent of asynchronous agent reasoning an
 execution. This is a dependency-driven roadmap, not a calendar promise. A milestone
 is complete only when its acceptance gates are demonstrated.
 
-Baseline: `ee95f2f`, merged PR #3 (M2.1). Contracts are in
-[architecture.md](architecture.md); M2.1 implementation details and limitations are
-in [runtime-foundation.md](runtime-foundation.md). Planned APIs are not existing APIs.
+Implementation snapshot: main `4331413`, including M2.1 (PR #3), the M2.2 core
+(PR #5), pipeline control/observability slices (PR #7/#8), and test expansion (PR #9).
+See [runtime-foundation.md](runtime-foundation.md) and
+[runtime-manager.md](runtime-manager.md) for implementation limits. The broader
+[architecture.md](architecture.md) still includes target contracts and an older
+implementation baseline. Planned APIs are not existing APIs.
 
 ## 1. Status and priorities
 
@@ -17,8 +20,9 @@ in [runtime-foundation.md](runtime-foundation.md). Planned APIs are not existing
 | RealFlow identity | Partial: CMake project renamed; `byteturn` paths, namespace, targets and metrics remain. |
 | Streaming cascade and HTTP/SSE | Present; full event coverage and production validation remain open. |
 | Session/timeline foundation | M2.1 landed: canonical metadata, bounded observation queues and lifecycle safeguards. |
-| Real pipeline integration | Fixture exists; complete model/tool events and interruption policy remain open. |
-| Runtime registry/admission/supervisor | Design in this revision; next implementation slice. |
+| Real pipeline integration | Explicit cancellation and model/tool/voice observation slices landed (PR #7/#8); full M2 acceptance remains open. |
+| Runtime registry/admission/supervisor | M2.2 core landed in PR #5; see [implementation evidence](runtime-manager.md). |
+| Multi-user voice chat lifecycle | Planned: authenticated user/session binding, Start/Stop Voice Chat, isolated routing and disconnect cleanup (M2.2a). |
 | Native realtime path | `FullDuplexConversation` exists outside the unified engine boundary. |
 | Custom agents, safe tools, context | Designed; concrete current Agent/ToolRegistry are narrower. |
 | Durable replay, recovery, orchestration | Planned. |
@@ -82,10 +86,12 @@ sanitizer/build results. These are not live-provider or production-load results.
 notification loss is possible; providers/observers must cooperate with shutdown;
 per-session threads have not been capacity-tested. Do not mark all of M2 complete.
 
-### M2.2 — Runtime Manager, registry and Session Supervisor (next)
+### M2.2 — Runtime Manager, registry and Session Supervisor (core landed, PR #5)
 
-First implement a process-local ownership layer around existing sessions. Registry
-and supervisor can be internal roles of `RuntimeManager`, not separate services.
+The process-local ownership layer is implemented; registry and supervisor are
+internal roles of `RuntimeManager`. The contracts below describe this core slice;
+implementation evidence and limitations are in [runtime-manager.md](runtime-manager.md).
+This does not yet implement the user-facing lifecycle in M2.2a.
 
 **Admission and registry:** atomically reserve an ID/incarnation and capacity before
 invoking a factory. Bound total reservations, queued starts and ID length. Count
@@ -128,6 +134,58 @@ All existing tests pass; sanitizer results are recorded without inventing covera
 Per-tenant quotas, shared scheduling, supervisor deadlines/watchdogs, process workers,
 restart budgets, persistent registry and distributed leases are M4 follow-ups.
 
+### M2.2a — Multi-user Start/Stop Voice Chat (planned)
+
+Multiple users must be able to start and stop their own independent voice-chat
+instances concurrently. An instance is a managed conversation session in one host
+process; a dedicated process per user is not required. Reuse M2.2 admission,
+handles, operation leases and completion tickets. Implement the user-facing binding
+in the application/transport adapter, without a second runtime registry or supervisor.
+The action names below are product requirements, not existing public APIs.
+
+**Ownership and isolation:** bind authenticated user identity and the owning client
+connection to a server-issued `SessionHandle`. Authorize every start, input, control,
+status and stop operation; possession of a session ID or handle is not authorization.
+Route input, transcripts, output audio and observations only to the owning session.
+Keep mutable agent history, provider session state and output buffers session-local;
+shared infrastructure must not mix users' state. Initially allow one active voice
+chat per authenticated client connection; additional-device policy remains explicit.
+
+**Start Voice Chat:** reserve capacity with `RuntimeManager::add()` and construct
+session-owned resources. Distinguish Starting from Running; accept audio only after
+the `started` ticket reports Started. Repeated starts on the same active connection
+return the same pending/running session rather than allocating duplicates. Surface
+capacity, startup-queue and startup-failure outcomes. Do not create a replacement
+while the old instance is retiring; a later start receives a fresh incarnation.
+
+**Stop Voice Chat:** validate ownership, fence new input and outbound delivery, request
+player flush/stop, and call `remove(handle)` for this session only. Repeated stops
+are idempotent. Show Stopping until the `retired` ticket confirms resource teardown;
+track player stop acknowledgement separately, since retirement does not prove silence.
+Stopping a voice chat ends its session; `cancel_response()` only interrupts a reply.
+Stop during startup must retire any partially created resources. Reject delayed
+audio, callbacks and stop requests from an earlier connection/session incarnation.
+
+**Disconnect and failure:** a detected connection loss follows the same stop path.
+Define a bounded transport liveness timeout for silent disconnects. Reconnecting
+creates a new authenticated binding, without implicit history or provider-state
+resumption. Retain capacity until actual retirement; report incomplete cleanup when
+dependencies do not cooperate. Neither a timeout nor client disappearance proves
+remote work stopped, and stopping does not undo completed tool side effects.
+
+**Acceptance gate:** exercise the real application adapter and managed pipeline with
+two authenticated clients and deterministic providers. Assert independent audio,
+transcript/history and output routing; cross-user input/status/stop rejection; one
+user stopping or failing while the other continues; duplicate start/stop; stop during
+startup; failed startup; full capacity; explicit and silent disconnect cleanup; and
+reconnect with stale input/output/control fenced. Verify definitive startup/retirement
+outcomes and capacity recovery with no orphan sessions. A player fixture must confirm
+output flush. Extend the same user-facing suite to the native adapter when M2.4 lands.
+
+**Scope:** first prove this bounded, single-process flow. Per-tenant quotas,
+multi-process placement, crash isolation and distributed recovery remain M4 work;
+basic user authorization and session isolation are required here, not deferred to M4.
+
 ### M2.3 — Complete pipeline event/control integration
 
 Wire conversation/model/tool events into one ingress without duplicates. Make state
@@ -162,6 +220,8 @@ measurements; derive SLOs from evidence rather than universal guessed numbers.
 **M2 demonstration:** one binary safely hosts multiple managed sessions, selects
 pipeline or native engine behind one API, keeps microphone input live during output,
 and interrupts deliberately without stale output, resource leaks or lost retirement.
+Two authenticated users independently Start/Stop Voice Chat through the application
+adapter, with isolated media/history and the lifecycle gates in M2.2a demonstrated.
 
 ## 6. M3 — Delegate
 
@@ -211,12 +271,13 @@ CPU, memory, cost, admission loss and failed/cancelled samples with environment 
 | Order | Change | Required proof |
 |---|---|---|
 | Done | M2.1 session/timeline foundation. | Existing PR #3 evidence; continue regression coverage. |
-| 1 | M2.2 runtime registry, admission, notify queue and stop-and-retire supervisor. | Capacity never releases early; failures and dropped notifications cannot orphan sessions. |
+| Done | M2.2 runtime registry, admission, notify queue and stop-and-retire supervisor (PR #5). | See runtime-manager.md for existing tests and cooperative-shutdown limits. |
+| 1 | M2.2a multi-user Start/Stop Voice Chat application binding. | Two users remain isolated; duplicate/racing starts/stops and disconnects cannot orphan sessions or affect another user. |
 | 2 | Complete pipeline events and explicit controls. | Full model/tool/voice integration and input during output. |
 | 3 | Native duplex/playback adapter. | Shared conformance, late-packet fencing and player-confirmed stop. |
 | 4 | Minimal custom-agent delegation. | Slow task, correction and obsolete-result suppression. |
 
-Review the runtime design first, then publish the bounded implementation separately.
+Reuse the landed runtime core for the bounded multi-user application binding.
 Keep mechanical naming changes separate. Registry ownership is foundational, not an
 excuse to implement every deployment/orchestration feature in the next PR.
 
