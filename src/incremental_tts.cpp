@@ -23,9 +23,11 @@ IncrementalTtsPipeline::~IncrementalTtsPipeline() {
 bool IncrementalTtsPipeline::push(std::string text) {
   std::unique_lock<std::mutex> lock(mutex_);
   cv_.wait(lock, [this] {
-    return cancelled_locally_ || error_ || queue_.size() < max_queued_chunks_;
+    return finishing_ || cancelled_locally_ || error_ ||
+           queue_.size() < max_queued_chunks_;
   });
-  if (cancelled_locally_ || error_ || (cancelled_ && cancelled_())) return false;
+  if (finishing_ || cancelled_locally_ || error_ || (cancelled_ && cancelled_()))
+    return false;
   queue_.push_back(std::move(text));
   cv_.notify_all();
   return true;

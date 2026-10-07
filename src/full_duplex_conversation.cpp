@@ -106,6 +106,8 @@ void FullDuplexConversation::acknowledge_playback(
       accepted = std::min(played_samples, delivered_samples_);
       if (accepted > played_samples_) {
         played_samples_ = accepted;
+        if (response_generation_done_ && played_samples_ == delivered_samples_)
+          response_active_ = false;
         changed = true;
       }
     }
@@ -180,6 +182,7 @@ void FullDuplexConversation::on_provider_event(RealtimeEvent event) {
         delivered_samples_ = 0;
         played_samples_ = 0;
         response_active_ = true;
+        response_generation_done_ = false;
         playback_started_ = false;
       }
       publish(EventType::SpeechStarted, event.response_id);
@@ -189,7 +192,8 @@ void FullDuplexConversation::on_provider_event(RealtimeEvent event) {
       DuplexAudio output;
       {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        if (!response_active_ || event.response_id != response_id_) return;
+        if (!response_active_ || response_generation_done_ ||
+            event.response_id != response_id_) return;
         output.response_id = event.response_id;
         output.start_sample = delivered_samples_;
         output.frame = std::move(event.audio);
@@ -207,8 +211,14 @@ void FullDuplexConversation::on_provider_event(RealtimeEvent event) {
       bool current = false;
       {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        current = response_active_ && event.response_id == response_id_;
-        if (current) response_active_ = false;
+        current = response_active_ && !response_generation_done_ &&
+                  event.response_id == response_id_;
+        if (current) {
+          response_generation_done_ = true;
+          // Generated audio may still be buffered by the player. Keep its
+          // identity/offset available for a later acknowledgement or barge-in.
+          response_active_ = played_samples_ < delivered_samples_;
+        }
       }
       if (current) {
         publish(EventType::SpeechCompleted, event.response_id);
