@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(byteturn
+  src/mock_providers.cpp
   src/runtime_manager.cpp
   src/agent.cpp
   src/conversation.cpp
@@ -93,3 +94,38 @@ set_tests_properties(interaction_control_tests observability_contract_tests
   PROPERTIES LABELS "integration;concurrency")
 set_tests_properties(byteturn_tests PROPERTIES LABELS "regression")
 set_tests_properties(runtime_manager_demo PROPERTIES LABELS "smoke")
+
+add_executable(mock_provider_tests tests/mock_provider_tests.cpp)
+target_link_libraries(mock_provider_tests PRIVATE byteturn)
+add_test(NAME mock_provider_tests COMMAND mock_provider_tests)
+add_executable(mock_pipeline_demo apps/mock_pipeline_demo.cpp)
+target_link_libraries(mock_pipeline_demo PRIVATE byteturn)
+add_test(NAME mock_pipeline_demo COMMAND mock_pipeline_demo)
+set_tests_properties(mock_provider_tests mock_pipeline_demo PROPERTIES TIMEOUT 30)
+
+option(REALFLOW_WEBSOCKET_MOCKS "Build loopback WebSocket mock provider adapters" OFF)
+if(REALFLOW_WEBSOCKET_MOCKS)
+  find_path(REALFLOW_BOOST_INCLUDE_DIR boost/beast/websocket.hpp REQUIRED)
+  find_path(REALFLOW_JSON_INCLUDE_DIR nlohmann/json.hpp REQUIRED)
+  find_package(Python3 3.11 COMPONENTS Interpreter REQUIRED)
+  execute_process(COMMAND ${Python3_EXECUTABLE} -c "import websockets.asyncio.server"
+    RESULT_VARIABLE WEBSOCKETS_IMPORT_RESULT ERROR_QUIET)
+  if(NOT WEBSOCKETS_IMPORT_RESULT EQUAL 0)
+    message(FATAL_ERROR "Install Python mock dependencies: python3 -m pip install -r apps/requirements-mocks.txt")
+  endif()
+  add_library(byteturn_ws_mocks src/websocket_mock_providers.cpp)
+  target_link_libraries(byteturn_ws_mocks PUBLIC byteturn)
+  target_include_directories(byteturn_ws_mocks SYSTEM PRIVATE
+    ${REALFLOW_BOOST_INCLUDE_DIR} ${REALFLOW_JSON_INCLUDE_DIR})
+  target_compile_definitions(byteturn_ws_mocks PRIVATE BOOST_ERROR_CODE_HEADER_ONLY)
+  target_compile_options(byteturn_ws_mocks PRIVATE -Wall -Wextra -Wpedantic)
+  add_executable(websocket_mock_demo apps/mock_pipeline_demo.cpp)
+  target_compile_definitions(websocket_mock_demo PRIVATE REALFLOW_WEBSOCKET_MOCK)
+  target_link_libraries(websocket_mock_demo PRIVATE byteturn_ws_mocks)
+  add_executable(websocket_mock_tests tests/websocket_mock_tests.cpp)
+  target_link_libraries(websocket_mock_tests PRIVATE byteturn_ws_mocks)
+  add_test(NAME websocket_mock_integration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_websocket_mocks.py
+    --client $<TARGET_FILE:websocket_mock_tests> --demo $<TARGET_FILE:websocket_mock_demo>)
+  set_tests_properties(websocket_mock_integration PROPERTIES TIMEOUT 90)
+endif()

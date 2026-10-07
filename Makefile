@@ -1,7 +1,7 @@
 .PHONY: all test test-foundation test-runtime test-interaction test-observability test-unit test-integration clean
 CXX ?= c++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Wpedantic -O2 -pthread -Iinclude
-SOURCES := src/runtime_manager.cpp src/agent.cpp src/conversation.cpp src/conversation_session.cpp src/event.cpp src/event_timeline.cpp src/executor.cpp src/full_duplex_conversation.cpp src/pipeline_conversation_engine.cpp src/openai_compatible.cpp src/session.cpp src/observability.cpp src/curl_transport.cpp src/sentence_segmenter.cpp src/incremental_tts.cpp src/turn_context.cpp
+SOURCES := src/mock_providers.cpp src/runtime_manager.cpp src/agent.cpp src/conversation.cpp src/conversation_session.cpp src/event.cpp src/event_timeline.cpp src/executor.cpp src/full_duplex_conversation.cpp src/pipeline_conversation_engine.cpp src/openai_compatible.cpp src/session.cpp src/observability.cpp src/curl_transport.cpp src/sentence_segmenter.cpp src/incremental_tts.cpp src/turn_context.cpp
 OBJECTS := $(SOURCES:src/%.cpp=build/obj/%.o)
 HEADERS := $(wildcard include/byteturn/*.h)
 TEST_HEADERS := tests/test_support.h
@@ -9,7 +9,7 @@ PYTHON ?= python3
 FOUNDATION_SOURCES := src/event.cpp src/event_timeline.cpp src/conversation_session.cpp
 LDLIBS := -lcurl
 
-all: build/byteturn_cli build/runtime_manager_demo
+all: build/byteturn_cli build/runtime_manager_demo build/mock_pipeline_demo
 
 build:
 	mkdir -p build
@@ -71,7 +71,18 @@ test-integration: build/conversation_integration_tests build/http_transport_inte
 	./build/interaction_control_tests
 	./build/observability_contract_tests
 
-test: build/component_unit_tests build/conversation_integration_tests build/http_transport_integration_tests build/observability_contract_tests build/byteturn_tests build/runtime_foundation_tests build/runtime_manager_tests build/interaction_control_tests
+build/mock_provider_tests: $(OBJECTS) tests/mock_provider_tests.cpp $(HEADERS) | build
+	$(CXX) $(CXXFLAGS) $(filter %.cpp %.o,$^) -o $@ $(LDLIBS)
+
+build/mock_pipeline_demo: $(OBJECTS) apps/mock_pipeline_demo.cpp $(HEADERS) | build
+	$(CXX) $(CXXFLAGS) $(filter %.cpp %.o,$^) -o $@ $(LDLIBS)
+
+.PHONY: test-mocks
+test-mocks: build/mock_provider_tests build/mock_pipeline_demo
+	./build/mock_provider_tests
+	./build/mock_pipeline_demo
+
+test: test-mocks build/component_unit_tests build/conversation_integration_tests build/http_transport_integration_tests build/observability_contract_tests build/byteturn_tests build/runtime_foundation_tests build/runtime_manager_tests build/interaction_control_tests
 	./build/observability_contract_tests
 	./build/byteturn_tests
 	./build/runtime_foundation_tests
