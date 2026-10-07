@@ -53,15 +53,20 @@ class FullDuplexConversation {
 
   // The transport/player must acknowledge what became audible. Values are
   // monotonic offsets within response_id at output_sample_rate_hz.
-  void playback_started(const std::string& response_id);
-  void acknowledge_playback(const std::string& response_id,
+  bool playback_started(const std::string& response_id);
+  bool acknowledge_playback(const std::string& response_id,
                             std::uint64_t played_samples);
+  // Request cancellation without claiming acoustic barge-in or physical mute.
+  bool cancel_response();
+  struct State { bool user_speaking; bool response_active; };
+  State state() const;
   void close();
 
  private:
   void input_loop();
   void on_provider_event(RealtimeEvent event);
   void begin_barge_in();
+  void cancel_active_response(bool barge_in);
   void publish(EventType type, const std::string& response_id = {},
                std::string name = {}, std::string data = {});
 
@@ -78,7 +83,7 @@ class FullDuplexConversation {
   std::deque<AudioFrame> input_queue_;
   std::thread input_worker_;
 
-  std::mutex state_mutex_;
+  mutable std::mutex state_mutex_;
   std::string response_id_;
   std::uint64_t delivered_samples_ = 0;
   std::uint64_t played_samples_ = 0;

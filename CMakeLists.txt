@@ -14,6 +14,7 @@ add_library(byteturn
   src/event_timeline.cpp
   src/executor.cpp
   src/full_duplex_conversation.cpp
+  src/native_duplex_conversation_engine.cpp
   src/pipeline_conversation_engine.cpp
   src/openai_compatible.cpp
   src/session.cpp
@@ -93,3 +94,9 @@ set_tests_properties(interaction_control_tests observability_contract_tests
   PROPERTIES LABELS "integration;concurrency")
 set_tests_properties(byteturn_tests PROPERTIES LABELS "regression")
 set_tests_properties(runtime_manager_demo PROPERTIES LABELS "smoke")
+
+add_executable(engine_conformance_tests tests/engine_conformance_tests.cpp)
+target_link_libraries(engine_conformance_tests PRIVATE byteturn)
+target_compile_options(engine_conformance_tests PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME engine_conformance_tests COMMAND engine_conformance_tests)
+set_tests_properties(engine_conformance_tests PROPERTIES LABELS "integration;concurrency" TIMEOUT 60)

@@ -141,7 +141,13 @@ deadline and stale-output behavior. This depends on M2.1, with M2.2 hosting exam
 
 ### M2.4 — Native duplex and playback unification
 
-Add the native engine adapter and a shared conformance suite. Separate generated,
+The minimal integration slice provides `NativeDuplexConversationEngine`, wrapping
+`FullDuplexConversation`, explicit playback reports through engine/session/runtime,
+and `engine_conformance_tests` shared with the pipeline. No vendor provider is added.
+Native events use one private bridge into the canonical session timeline. Pipeline
+playback reports explicitly return unsupported (`false`).
+
+Remaining work: separate generated,
 queued, playing, stopped and completed output. Generation completion must not make
 still-playing audio uninterruptible. Fence response/session generations; define
 sample-frame offsets, formats and playback acknowledgement. Negotiate one owner

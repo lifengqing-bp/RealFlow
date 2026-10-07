@@ -115,6 +115,17 @@ bool ConversationSession::cancel_response() {
   return operation && engine_->cancel_response();
 }
 
+bool ConversationSession::playback_started(const std::string& response_id) {
+  Operation operation(*this);
+  return operation && engine_->playback_started(response_id);
+}
+
+bool ConversationSession::acknowledge_playback(const std::string& response_id,
+    std::uint64_t played_samples) {
+  Operation operation(*this);
+  return operation && engine_->acknowledge_playback(response_id, played_samples);
+}
+
 TimelineAppendResult ConversationSession::observe(Event event) {
   Operation operation(*this);
   if (!operation) return {};

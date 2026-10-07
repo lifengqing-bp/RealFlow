@@ -114,6 +114,10 @@ class RuntimeManager {
   // Uses the same incarnation/admission checks as input; does not retire the
   // session. True means requested, not stopped or rolled back externally.
   bool cancel_response(const SessionHandle& handle);
+  // Explicit player reports; false on unsupported/stopped/stale admission.
+  bool playback_started(const SessionHandle& handle, const std::string& response_id);
+  bool acknowledge_playback(const SessionHandle& handle, const std::string& response_id,
+                            std::uint64_t played_samples);
   // True means the legacy hook was forwarded, not that a typed command was
   // accepted. Use observe() for explicit timeline admission results.
   bool handle_event(const SessionHandle& handle, Event event);

@@ -16,6 +16,7 @@ struct ConversationCapabilities {
   bool native_backchannel = false;
   bool transcript_available = true;
   bool response_cancellation = false;
+  bool playback_acknowledgement = false;
 };
 
 struct ConversationStateSnapshot {
@@ -36,7 +37,7 @@ struct ConversationEngineContext {
 };
 
 // start/stop run on the session lifecycle lane, without a session lock.
-// push_audio, cancel_response, handle_event and state may run concurrently.
+// Media/control methods and state may run concurrently.
 // They must be thread-safe and bounded while Running. stop runs after admitted
 // calls drain, and must quiesce provider callbacks, including after failed start.
 // Arbitrary provider/application callbacks should call request_stop(), never a
@@ -52,6 +53,13 @@ class ConversationEngine {
   // Cancels pending response work and generation; it cannot undo tool effects.
   // Unsupported engines return false without side effects.
   virtual bool cancel_response() { return false; }
+  // Explicit player reports, never inferred from generated/queued audio.
+  // Offsets are cumulative mono samples at the configured output sample rate.
+  // False means unsupported, unavailable, or an inactive/mismatched response.
+  // True admits a report; duplicate/regressive reports are harmless no-ops,
+  // and progress is clamped to delivered audio. It does not prove silence.
+  virtual bool playback_started(const std::string&) { return false; }
+  virtual bool acknowledge_playback(const std::string&, std::uint64_t) { return false; }
   virtual void handle_event(const Event& event) = 0;
   virtual void stop() = 0;
 

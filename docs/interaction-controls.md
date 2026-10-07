@@ -88,3 +88,41 @@ pipeline, session/timeline and Runtime Manager suites. CMake registers the same 
 executable as `interaction_control_tests`. The suite covers raw input versus actions,
 correction preservation, stale handles, late model/tool/audio output, unsupported
 engines, callback re-entry, lifecycle leases and manager-contained control failures.
+
+## Native duplex playback contract
+
+`NativeDuplexConversationEngine` borrows a `RealtimeSpeechProvider` and reuses
+`FullDuplexConversation`; providers and output sinks must outlive engine teardown.
+Its private event bus forwards each observation only to the session timeline sink.
+Do not republish transcript/audio callbacks as canonical observations.
+
+`playback_started(response_id)` and
+`acknowledge_playback(response_id, played_samples)` are explicit control APIs on
+`ConversationEngine`, `ConversationSession`, and `RuntimeManager` (the manager
+also requires a `SessionHandle`). The capability is `playback_acknowledgement`.
+The default, including pipeline, returns `false` without effects. Session/runtime
+admission also returns `false` before startup, during stop, or for a stale handle.
+Native reports return `false` for inactive/mismatched responses; for active
+responses, duplicate/regressive reports succeed without another event. Progress
+is cumulative, monotonic and clamped to delivered mono samples at the configured
+output rate. Reports after generation completion remain valid while audio is
+unheard. A new response resets the sample offset; old-response audio/acks are
+ignored. Providers must supply unique response identities within a connection.
+
+Native `cancel_response()` uses the same acknowledged offset as VAD barge-in,
+but emits `ResponseCancelRequested`, not `BargeInDetected`. Input remains live.
+A true return acknowledges dispatch, including an idle no-op. `OutputCancelled`
+records provider cancellation/truncation dispatch, **not physical silence**.
+Already queued player audio and callbacks already in flight are not recalled;
+a player flush/stopped acknowledgement remains future work. Stop drains admitted
+controls, joins input, and waits for provider `close()` to quiesce callbacks before
+retiring resources. Callback code must request shutdown rather than wait for it.
+
+The adapter preserves configured server VAD ownership. With client EOU,
+`AudioFrame::end_of_utterance` commits input; client interruption policy calls
+`cancel_response()` explicitly. `handle_event()` is never a playback/VAD command.
+The shared conformance suite covers continuous input during output, unsupported
+pipeline reports, native playback/sample fencing and barge-in offset, late audio,
+canonical event counts/order, handle reuse, and gated callback shutdown. It uses
+local fixtures only; vendor validation, negotiated formats/capabilities and
+player-confirmed physical stop remain outside this slice.

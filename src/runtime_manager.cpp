@@ -477,6 +477,19 @@ bool RuntimeManager::cancel_response(const SessionHandle& handle) {
   try { return op.entry->session->cancel_response(); }
   catch (...) { impl_->remove(handle, SessionOutcome::EngineFailure); return false; }
 }
+
+bool RuntimeManager::playback_started(const SessionHandle& handle, const std::string& response_id) {
+  Impl::Operation op(*impl_, handle);
+  if (!op.entry) return false;
+  try { return op.entry->session->playback_started(response_id); }
+  catch (...) { impl_->remove(handle, SessionOutcome::EngineFailure); return false; }
+}
+bool RuntimeManager::acknowledge_playback(const SessionHandle& handle, const std::string& response_id, std::uint64_t played_samples) {
+  Impl::Operation op(*impl_, handle);
+  if (!op.entry) return false;
+  try { return op.entry->session->acknowledge_playback(response_id, played_samples); }
+  catch (...) { impl_->remove(handle, SessionOutcome::EngineFailure); return false; }
+}
 bool RuntimeManager::handle_event(const SessionHandle& handle, Event event) {
   Impl::Operation op(*impl_, handle);
   if (!op.entry) return false;

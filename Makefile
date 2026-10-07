@@ -1,7 +1,7 @@
 .PHONY: all test test-foundation test-runtime test-interaction test-observability test-unit test-integration clean
 CXX ?= c++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Wpedantic -O2 -pthread -Iinclude
-SOURCES := src/runtime_manager.cpp src/agent.cpp src/conversation.cpp src/conversation_session.cpp src/event.cpp src/event_timeline.cpp src/executor.cpp src/full_duplex_conversation.cpp src/pipeline_conversation_engine.cpp src/openai_compatible.cpp src/session.cpp src/observability.cpp src/curl_transport.cpp src/sentence_segmenter.cpp src/incremental_tts.cpp src/turn_context.cpp
+SOURCES := src/runtime_manager.cpp src/agent.cpp src/conversation.cpp src/conversation_session.cpp src/event.cpp src/event_timeline.cpp src/executor.cpp src/full_duplex_conversation.cpp src/native_duplex_conversation_engine.cpp src/pipeline_conversation_engine.cpp src/openai_compatible.cpp src/session.cpp src/observability.cpp src/curl_transport.cpp src/sentence_segmenter.cpp src/incremental_tts.cpp src/turn_context.cpp
 OBJECTS := $(SOURCES:src/%.cpp=build/obj/%.o)
 HEADERS := $(wildcard include/byteturn/*.h)
 TEST_HEADERS := tests/test_support.h
@@ -65,21 +65,26 @@ test-unit: build/component_unit_tests build/runtime_foundation_tests build/runti
 	./build/runtime_foundation_tests
 	./build/runtime_manager_tests
 
-test-integration: build/conversation_integration_tests build/http_transport_integration_tests build/interaction_control_tests build/observability_contract_tests
+test-integration: build/engine_conformance_tests build/conversation_integration_tests build/http_transport_integration_tests build/interaction_control_tests build/observability_contract_tests
+	./build/engine_conformance_tests
 	./build/conversation_integration_tests
 	$(PYTHON) tests/http_fixture.py build/http_transport_integration_tests
 	./build/interaction_control_tests
 	./build/observability_contract_tests
 
-test: build/component_unit_tests build/conversation_integration_tests build/http_transport_integration_tests build/observability_contract_tests build/byteturn_tests build/runtime_foundation_tests build/runtime_manager_tests build/interaction_control_tests
+test: build/engine_conformance_tests build/component_unit_tests build/conversation_integration_tests build/http_transport_integration_tests build/observability_contract_tests build/byteturn_tests build/runtime_foundation_tests build/runtime_manager_tests build/interaction_control_tests
 	./build/observability_contract_tests
 	./build/byteturn_tests
 	./build/runtime_foundation_tests
 	./build/runtime_manager_tests
 	./build/interaction_control_tests
 	./build/component_unit_tests
+	./build/engine_conformance_tests
 	./build/conversation_integration_tests
 	$(PYTHON) tests/http_fixture.py build/http_transport_integration_tests
 
 clean:
 	rm -rf build
+
+build/engine_conformance_tests: $(OBJECTS) tests/engine_conformance_tests.cpp $(HEADERS) $(TEST_HEADERS) | build
+	$(CXX) $(CXXFLAGS) $(filter %.cpp %.o,$^) -o $@ $(LDLIBS)

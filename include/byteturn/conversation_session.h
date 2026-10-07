@@ -35,6 +35,10 @@ class ConversationSession {
   // Explicit response cancellation. Does not stop the session or ASR input.
   // False when not Running or unsupported by the engine.
   bool cancel_response();
+  // Explicit player reports; false on unsupported/stopped/stale admission.
+  bool playback_started(const std::string& response_id);
+  bool acknowledge_playback(const std::string& response_id,
+                            std::uint64_t played_samples);
 
   // Observation-only ingress: never asks an engine to perform an action.
   TimelineAppendResult observe(Event event);

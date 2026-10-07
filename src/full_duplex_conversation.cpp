@@ -84,37 +84,39 @@ void FullDuplexConversation::input_speech_ended() {
   provider_session_->commit_input();
 }
 
-void FullDuplexConversation::playback_started(const std::string& response_id) {
+bool FullDuplexConversation::playback_started(const std::string& response_id) {
   bool changed = false;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (response_active_ && response_id == response_id_ && !playback_started_) {
+    if (stopping_ || !response_active_ || response_id != response_id_) return false;
+    if (!playback_started_) {
       playback_started_ = true;
       changed = true;
     }
   }
   if (changed) publish(EventType::PlaybackStarted, response_id);
+  return true;
 }
 
-void FullDuplexConversation::acknowledge_playback(
+bool FullDuplexConversation::acknowledge_playback(
     const std::string& response_id, std::uint64_t played_samples) {
   std::uint64_t accepted = 0;
   bool changed = false;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (response_active_ && response_id == response_id_) {
-      accepted = std::min(played_samples, delivered_samples_);
-      if (accepted > played_samples_) {
-        played_samples_ = accepted;
-        if (response_generation_done_ && played_samples_ == delivered_samples_)
-          response_active_ = false;
-        changed = true;
-      }
+    if (stopping_ || !response_active_ || response_id != response_id_) return false;
+    accepted = std::min(played_samples, delivered_samples_);
+    if (accepted > played_samples_) {
+      played_samples_ = accepted;
+      if (response_generation_done_ && played_samples_ == delivered_samples_)
+        response_active_ = false;
+      changed = true;
     }
   }
   if (changed)
     publish(EventType::PlaybackProgress, response_id, {},
             std::to_string(accepted));
+  return true;
 }
 
 void FullDuplexConversation::close() {
@@ -235,7 +237,22 @@ void FullDuplexConversation::on_provider_event(RealtimeEvent event) {
   }
 }
 
+FullDuplexConversation::State FullDuplexConversation::state() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return {input_speech_active_, response_active_};
+}
+
+bool FullDuplexConversation::cancel_response() {
+  if (stopping_) return false;
+  cancel_active_response(false);
+  return true;
+}
+
 void FullDuplexConversation::begin_barge_in() {
+  cancel_active_response(true);
+}
+
+void FullDuplexConversation::cancel_active_response(bool barge_in) {
   std::string response_id;
   std::uint64_t played_samples = 0;
   {
@@ -245,7 +262,8 @@ void FullDuplexConversation::begin_barge_in() {
     played_samples = played_samples_;
     response_active_ = false;
   }
-  publish(EventType::BargeInDetected, response_id);
+  publish(barge_in ? EventType::BargeInDetected : EventType::ResponseCancelRequested,
+          response_id);
   provider_session_->cancel_response(response_id, played_samples,
                                      config_.output_sample_rate_hz);
   publish(EventType::OutputCancelled, response_id, {},
