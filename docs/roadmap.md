@@ -22,7 +22,7 @@ implementation baseline. Planned APIs are not existing APIs.
 | Session/timeline foundation | M2.1 landed: canonical metadata, bounded observation queues and lifecycle safeguards. |
 | Real pipeline integration | Explicit cancellation and model/tool/voice observation slices landed (PR #7/#8); full M2 acceptance remains open. |
 | Runtime registry/admission/supervisor | M2.2 core landed in PR #5; see [implementation evidence](runtime-manager.md). |
-| Multi-user voice chat lifecycle | Planned: authenticated user/session binding, Start/Stop Voice Chat, isolated routing and disconnect cleanup (M2.2a). |
+| Multi-user voice chat lifecycle | M2.2a single-process pipeline binding and deterministic two-client acceptance implemented; see [integration contract](multi-user-voice-chat.md). Production transport/auth and native conformance remain outside this slice. |
 | Native realtime path | `FullDuplexConversation` exists outside the unified engine boundary. |
 | Custom agents, safe tools, context | Designed; concrete current Agent/ToolRegistry are narrower. |
 | Durable replay, recovery, orchestration | Planned. |
@@ -134,14 +134,15 @@ All existing tests pass; sanitizer results are recorded without inventing covera
 Per-tenant quotas, shared scheduling, supervisor deadlines/watchdogs, process workers,
 restart budgets, persistent registry and distributed leases are M4 follow-ups.
 
-### M2.2a — Multi-user Start/Stop Voice Chat (planned)
+### M2.2a — Multi-user Start/Stop Voice Chat (single-process pipeline slice implemented)
 
 Multiple users must be able to start and stop their own independent voice-chat
 instances concurrently. An instance is a managed conversation session in one host
 process; a dedicated process per user is not required. Reuse M2.2 admission,
 handles, operation leases and completion tickets. Implement the user-facing binding
 in the application/transport adapter, without a second runtime registry or supervisor.
-The action names below are product requirements, not existing public APIs.
+The application API and acceptance evidence are in [multi-user-voice-chat.md](multi-user-voice-chat.md).
+The contracts below also govern future transport/native integration.
 
 **Ownership and isolation:** bind authenticated user identity and the owning client
 connection to a server-issued `SessionHandle`. Authorize every start, input, control,
@@ -272,7 +273,7 @@ CPU, memory, cost, admission loss and failed/cancelled samples with environment 
 |---|---|---|
 | Done | M2.1 session/timeline foundation. | Existing PR #3 evidence; continue regression coverage. |
 | Done | M2.2 runtime registry, admission, notify queue and stop-and-retire supervisor (PR #5). | See runtime-manager.md for existing tests and cooperative-shutdown limits. |
-| 1 | M2.2a multi-user Start/Stop Voice Chat application binding. | Two users remain isolated; duplicate/racing starts/stops and disconnects cannot orphan sessions or affect another user. |
+| Done (pipeline fixture) | M2.2a single-process Start/Stop Voice Chat application binding. | `voice_chat_acceptance_tests` covers two clients, ownership, lifecycle races, disconnects and player-confirmed flush. Production transport wiring and native conformance remain follow-ups. |
 | 2 | Complete pipeline events and explicit controls. | Full model/tool/voice integration and input during output. |
 | 3 | Native duplex/playback adapter. | Shared conformance, late-packet fencing and player-confirmed stop. |
 | 4 | Minimal custom-agent delegation. | Slow task, correction and obsolete-result suppression. |
