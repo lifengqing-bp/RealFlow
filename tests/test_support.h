@@ -117,6 +117,7 @@ inline int run(int argc, char** argv, const std::vector<Test>& tests) {
   for (const auto& test : tests) {
     if (!selected.empty() && selected != test.first) continue;
     ++executed;
+    std::cout << "RUN " << test.first << std::endl;
     try {
       test.second();
       std::cout << "PASS " << test.first << std::endl;

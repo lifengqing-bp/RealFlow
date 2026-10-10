@@ -118,7 +118,12 @@ void FullDuplexConversation::acknowledge_playback(
 }
 
 void FullDuplexConversation::close() {
-  if (stopping_.exchange(true, std::memory_order_acq_rel)) return;
+  {
+    // Serialize the predicate change with the worker's check-to-wait window.
+    // An atomic flag alone does not prevent a lost condition-variable wakeup.
+    std::lock_guard<std::mutex> lock(input_mutex_);
+    if (stopping_.exchange(true, std::memory_order_acq_rel)) return;
+  }
   input_cv_.notify_all();
   if (input_worker_.joinable()) input_worker_.join();
   if (provider_session_) provider_session_->close();

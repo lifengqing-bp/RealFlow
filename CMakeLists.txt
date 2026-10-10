@@ -76,6 +76,27 @@ target_compile_options(conversation_integration_tests PRIVATE -Wall -Wextra -Wpe
 add_test(NAME conversation_integration_tests COMMAND conversation_integration_tests)
 set_tests_properties(conversation_integration_tests PROPERTIES LABELS "integration" TIMEOUT 90)
 
+# Force the native input check-to-wait race without production test hooks.
+# The wrapped C++ symbols below are specific to Linux/libstdc++.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  include(CheckCXXSourceCompiles)
+  check_cxx_source_compiles("#include <condition_variable>
+#ifndef __GLIBCXX__
+#error requires libstdc++
+#endif
+int main() { return 0; }" REALFLOW_HAS_LIBSTDCXX)
+  if(REALFLOW_HAS_LIBSTDCXX)
+    add_executable(native_close_wakeup_tests tests/native_close_wakeup_tests.cpp)
+    target_link_libraries(native_close_wakeup_tests PRIVATE byteturn)
+    target_link_options(native_close_wakeup_tests PRIVATE
+      "-Wl,--wrap=_ZNSt18condition_variable4waitERSt11unique_lockISt5mutexE"
+      "-Wl,--wrap=_ZNSt18condition_variable10notify_allEv"
+      "-Wl,--wrap=pthread_mutex_lock")
+    add_test(NAME native_close_wakeup_tests COMMAND native_close_wakeup_tests)
+    set_tests_properties(native_close_wakeup_tests PROPERTIES LABELS "integration;concurrency" TIMEOUT 15)
+  endif()
+endif()
+
 option(REALFLOW_ENABLE_HTTP_TESTS "Run loopback HTTP integration tests (requires Python 3.9+)" ON)
 if(REALFLOW_ENABLE_HTTP_TESTS)
   find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
