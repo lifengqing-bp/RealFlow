@@ -235,3 +235,12 @@ the pre-turn checkpoint.
 ## License
 
 Apache-2.0. See `LICENSE`.
+
+### Multi-user Voice Chat application binding
+
+The single-process `VoiceChatConnection` adapter binds a trusted authenticated
+connection to one RuntimeManager session, with Start/Stop/PushAudio/Status,
+isolated bounded media routing, disconnect cleanup and explicit player flush
+acknowledgement. Run the two-client mock-pipeline acceptance suite with
+`make test-voice-chat`; see [the integration contract](docs/multi-user-voice-chat.md)
+for authentication, transport liveness and player responsibilities.

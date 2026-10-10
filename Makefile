@@ -82,7 +82,7 @@ test-mocks: build/mock_provider_tests build/mock_pipeline_demo
 	./build/mock_provider_tests
 	./build/mock_pipeline_demo
 
-test: test-mocks build/component_unit_tests build/conversation_integration_tests build/http_transport_integration_tests build/observability_contract_tests build/byteturn_tests build/runtime_foundation_tests build/runtime_manager_tests build/interaction_control_tests
+test: test-voice-chat test-mocks build/component_unit_tests build/conversation_integration_tests build/http_transport_integration_tests build/observability_contract_tests build/byteturn_tests build/runtime_foundation_tests build/runtime_manager_tests build/interaction_control_tests
 	./build/observability_contract_tests
 	./build/byteturn_tests
 	./build/runtime_foundation_tests
@@ -94,3 +94,10 @@ test: test-mocks build/component_unit_tests build/conversation_integration_tests
 
 clean:
 	rm -rf build
+
+.PHONY: test-voice-chat
+build/voice_chat_acceptance_tests: $(OBJECTS) apps/voice_chat_adapter.cpp apps/voice_chat_adapter.h tests/voice_chat_acceptance_tests.cpp $(HEADERS) $(TEST_HEADERS) | build
+	$(CXX) $(CXXFLAGS) -Iapps $(filter %.cpp %.o,$^) -o $@ $(LDLIBS)
+
+test-voice-chat: build/voice_chat_acceptance_tests
+	./build/voice_chat_acceptance_tests
