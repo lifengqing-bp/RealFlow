@@ -286,7 +286,10 @@ void native_bounded_input_and_provider_rejection() {
   Finally cleanup([&] { release.set(); });
   check(s.push_audio(frame(1)), "first frame queued"); entered.wait();
   check(s.push_audio(frame(2)) && !s.push_audio(frame(3)), "bounded input rejects newest frame");
-  release.set(); p.state->wait_pushes(2); captured.wait(EventType::Error, 3); s.close();
+  release.set(); p.state->wait_pushes(2); captured.wait(EventType::Error, 3);
+  std::cout << "  native bounded input: two pushes and three errors observed; closing" << std::endl;
+  s.close();
+  std::cout << "  native bounded input: close completed" << std::endl;
   auto t = captured.snapshot(); int overload = 0, rejected = 0;
   for (const auto& e : t) { if (e.name == "audio_overload") ++overload; if (e.name == "provider_backpressure") ++rejected; }
   check(overload == 1 && rejected == 2 && p.state->pushes == 2, "distinct overload/rejection evidence");

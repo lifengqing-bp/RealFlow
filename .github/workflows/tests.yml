@@ -55,7 +55,7 @@ jobs:
         run: |
           set -o pipefail
           ctest --test-dir build/cmake --output-on-failure --repeat until-fail:10 \
-            -R 'component_unit_tests|conversation_integration_tests|http_transport_integration_tests|runtime_foundation_tests|runtime_manager_tests|interaction_control_tests' \
+            -R 'component_unit_tests|conversation_integration_tests|native_close_wakeup_tests|http_transport_integration_tests|runtime_foundation_tests|runtime_manager_tests|interaction_control_tests' \
             | tee test-results/repeated-tests.log
       - name: Make tests
         if: matrix.name == 'gcc'
